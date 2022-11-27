@@ -1,0 +1,221 @@
+tags:
+  include: ["name:ab","name:aa","name:af","name:sq","name:am","name:ar","name:hy","name:as","name:ay","name:az","name:ba","name:eu","name:bn","name:dz","name:bh","name:bi","name:br","name:bg","name:my","name:be","name:km","name:ca","name:zh","name:co","name:hr","name:cs","name:da","name:nl","name:en","name:eo","name:et","name:fo","name:fj","name:fi","name:fr","name:fy","name:gd","name:gl","name:ka","name:de","name:el","name:kl","name:gn","name:gu","name:ha","name:iw","name:hi","name:hu","name:is","name:in","name:ia","name:ie","name:ik","name:ga","name:it","name:ja","name:jw","name:kn","name:ks","name:kk","name:rw","name:ky","name:rn","name:ko","name:ku","name:lo","name:la","name:lv","name:ln","name:lt","name:mk","name:mg","name:ms","name:ml","name:mt","name:mi","name:mr","name:mo","name:mn","name:na","name:ne","name:no","name:oc","name:or","name:om","name:ps","name:fa","name:pl","name:pt","name:pa","name:qu","name:rm","name:ro","name:ru","name:sm","name:sg","name:sa","name:sr","name:sh","name:st","name:tn","name:sn","name:sd","name:si","name:ss","name:sk","name:sl","name:so","name:es","name:su","name:sw","name:sv","name:tl","name:tg","name:ta","name:tt","name:te","name:th","name:bo","name:ti","name:to","name:ts","name:tr","name:tk","name:tw","name:uk","name:ur","name:uz","name:vi","name:vo","name:cy","name:wo","name:xh","name:ji","name:yo","name:zu"]
+tables:
+  associated_streets:
+    type: relation_member
+    columns:
+      - name: rel_osm_id
+        type: id
+        key:
+      - name: name
+        type: string
+        key: name
+      - type: string
+        name: addr:postcode
+        key: addr:postcode
+      - name: member_osm_id
+        type: member_id
+        key:
+      - name: role
+        type: member_role
+      - type: hstore_tags
+        name: tags
+        key:
+    relation_types: [associatedStreet, street]
+    mapping:
+      type: [associatedStreet, street]
+  buildings:
+    columns:
+    - type: id
+      name: osm_id
+      key:
+    - type: geometry
+      name: way
+      key:
+    - type: string
+      name: name
+      key: name
+    - type: string
+      name: housenumber
+      key: addr:housenumber
+    - type: string
+      name: addr:street
+      key: addr:street
+    - type: string
+      name: addr:postcode
+      key: addr:postcode
+    - type: mapping_value
+      name: type
+      key:
+    type: polygon
+    mapping:
+      building:
+      - __any__
+  places:
+    columns:
+    - type: id
+      name: osm_id
+      key:
+    - type: geometry
+      name: way
+      key:
+    - type: string
+      name: name
+      key: name
+    - type: mapping_value
+      name: type
+      key:
+    - type: hstore_tags
+      name: tags
+      key:
+    type: point
+    filters:
+      require:
+        name: [ __any__ ]
+    mapping:
+      place:
+      - country
+      - state
+      - region
+      - county
+      - city
+      - town
+      - village
+      - hamlet
+      - suburb
+      - locality
+  admin:
+    columns:
+    - type: id
+      name: osm_id
+      key:
+    - type: geometry
+      name: way
+      key:
+    - type: string
+      name: name
+      key: name
+    - type: mapping_value
+      name: type
+      key:
+    - type: string
+      name: place
+      key: place
+    - type: string
+      name: postal_code
+    - type: integer
+      name: admin_level
+      key: admin_level
+    - type: hstore_tags
+      name: tags
+      key:
+    type: polygon
+    filters:
+      require:
+        name: [ __any__ ]
+#    filters:
+#      require:
+#        place: [ "city","hamlet","town","village","state" ]
+    mapping:
+      boundary:
+      - administrative
+  roads:
+    columns:
+    - type: id
+      name: osm_id
+      key:
+    - type: geometry
+      name: way
+      key:
+    - type: mapping_value
+      name: type
+      key:
+    - type: string
+      name: name
+      key: name
+    - type: hstore_tags
+      name: tags
+      key:
+    - type: mapping_key
+      name: class
+      key:
+    type: linestring
+    filters:
+      reject:
+        area:
+        - 'yes'
+      require:
+        name: [ __any__ ]
+    mappings:
+      railway:
+        mapping:
+          railway:
+          - rail
+          - tram
+          - light_rail
+          - subway
+          - narrow_gauge
+          - preserved
+          - funicular
+          - monorail
+          - disused
+      roads:
+        mapping:
+          man_made:
+          - pier
+          - groyne
+          highway:
+          - motorway
+          - motorway_link
+          - trunk
+          - trunk_link
+          - primary
+          - primary_link
+          - secondary
+          - secondary_link
+          - tertiary
+          - tertiary_link
+          - road
+          - path
+          - track
+          - service
+          - footway
+          - bridleway
+          - cycleway
+          - steps
+          - pedestrian
+          - living_street
+          - unclassified
+          - residential
+          - raceway
+          - construction
+          - proposed
+          - unclassified
+          - unknown
+  housenumbers:
+    columns:
+    - type: id
+      name: osm_id
+      key:
+    - type: geometry
+      name: way
+      key:
+    - type: string
+      name: name
+      key: name
+    - type: mapping_value
+      name: type
+      key:
+    - type: string
+      name: addr:street
+      key: addr:street
+    - type: string
+      name: addr:postcode
+      key: addr:postcode
+    - type: string
+      name: addr:city
+      key: addr:city
+    type: point
+    mapping:
+      addr:housenumber:
+      - __any__
