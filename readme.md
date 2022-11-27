@@ -4,7 +4,7 @@ This is *postgis* & *imposm3* & *docker* based script which extracts addresses f
 country->state->city->street->building
 ```
 Run *./run.sh* and select country.
-As a result you'll find an sql file in *results* folder.
+As a result you'll find an sql file in *results* folder. Use *pg_restore* utility to upload it to your Postgres (with Postgis & hstore extensions installed).
 There are many things to improve, feel free to do this.
 
 ## License
