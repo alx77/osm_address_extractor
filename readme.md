@@ -1,5 +1,5 @@
 # osm_address_extractor
-This is *postgis* & *imposm3* & *docker* based script which extracts addresses in the following relational schema
+This is *postgis* & *imposm3* & *docker* based script which extracts addresses from OSM pbf files to the following relational schema
 ```
 country->state->city->street->building
 ```
