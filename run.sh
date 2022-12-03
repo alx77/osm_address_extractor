@@ -1,6 +1,5 @@
 #!/bin/bash
 
-
 HEIGHT=25
 WIDTH=40
 CHOICE_HEIGHT=20
@@ -175,7 +174,12 @@ case $CHOICE in
         URL="europe/ukraine-latest.osm.pbf"
         ;;
 esac
-docker build -t postgres-extractor .
+
+if [[ "$(docker images -q postgres-extractor 2> /dev/null)" == "" ]]; then
+    docker build -t postgres-extractor .
+else
+    echo "postgres-extractor image already exists, skipping..."
+fi
 docker stop postgres-extractor
 docker rm postgres-extractor
 docker run --name postgres-extractor -e POSTGRES_PASSWORD=secret -v $(pwd)/results:/results -d postgres-extractor
