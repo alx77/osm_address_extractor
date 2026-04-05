@@ -184,7 +184,7 @@ docker stop postgres-extractor
 docker rm postgres-extractor
 mkdir -p "$(dirname "$0")/cache"
 docker run --name postgres-extractor -e POSTGRES_PASSWORD=secret \
-    --mount type=tmpfs,destination=/dev/shm,tmpfs-size=1g \
+    --shm-size=2g \
     -v "$(cd "$(dirname "$0")" && pwd)/results":/results \
     -v "$(cd "$(dirname "$0")" && pwd)/cache":/cache \
     -d postgres-extractor
