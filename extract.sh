@@ -28,3 +28,4 @@ echo "extracting addresses from gis$2 database, please wait, it can take a while
 time su postgres -c "psql -U postgres -d gis$2 -f ./osm_addresses_extractor.sql"
 echo "exporting results..."
 time pg_dump -Fd -j 4 -U postgres -d gis$2 -T lines -T spatial_ref_sys -f /results/osm_addresses_$2
+chmod -R 755 /results/osm_addresses_$2
