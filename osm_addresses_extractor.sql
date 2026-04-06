@@ -443,60 +443,13 @@ WHERE s.tags->'addr:postcode' IS NOT NULL
   AND s.tags->'addr:postcode' <> ''
   AND NOT (COALESCE(s.postcodes, '{}') @> ARRAY[s.tags->'addr:postcode']);
 
--- ─── Drop temporary way_3857 column (before dump) ────────────────────────────
+-- ─── Drop temporary columns and indexes (before dump) ────────────────────────
+-- way_3857 was used only for the building spatial join.
+-- All internal spatial-join indexes (country/state/city way, street name/rels/city)
+-- remain in the dump but are used only during generation; production schema is
+-- managed by geocompleter-rs/postgres/create.sql which owns all PKs, FKs, and
+-- production indexes. pg_restore --data-only ignores index/constraint definitions.
 ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
-
--- ─── Bulk add PKs, FKs, and all secondary indexes ────────────────────────────
--- Done in one pass after all data is loaded — bulk index builds are 2-3x faster
--- than per-row index maintenance during INSERT. Order: parent tables first.
-
-ALTER TABLE data_source ADD PRIMARY KEY (id);
-
-ALTER TABLE country ADD PRIMARY KEY (osm_id);
--- idx_country_way_geo: built earlier (spatial join), kept in dump.
-
-ALTER TABLE state ADD PRIMARY KEY (osm_id);
-ALTER TABLE state ADD CONSTRAINT fk_state_country
-    FOREIGN KEY (country_osm_id) REFERENCES country(osm_id);
-CREATE INDEX idx_state_country_osm_id ON state (country_osm_id);
--- idx_state_way_geo: built earlier (spatial join), kept in dump.
-
-ALTER TABLE city ADD PRIMARY KEY (osm_id);
-ALTER TABLE city ADD CONSTRAINT fk_city_state
-    FOREIGN KEY (state_osm_id) REFERENCES state(osm_id);
-CREATE INDEX idx_city_state_osm_id ON city (state_osm_id);
--- idx_city_way_geo, idx_city_way_origin: built earlier (spatial join), kept in dump.
-
-ALTER TABLE street ADD PRIMARY KEY (id);
-ALTER TABLE street ADD CONSTRAINT fk_street_city
-    FOREIGN KEY (city_osm_id) REFERENCES city(osm_id);
-ALTER TABLE street ADD CONSTRAINT fk_street_source
-    FOREIGN KEY (source_id) REFERENCES data_source(id);
-CREATE UNIQUE INDEX idx_street_active     ON street (id) WHERE deleted_at IS NULL;
--- idx_street_name, idx_street_city_osm_id, idx_street_rel_osm_ids: built earlier, kept in dump.
-CREATE INDEX idx_street_importance        ON street (importance DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_street_postcodes         ON street USING GIN (postcodes) WHERE postcodes IS NOT NULL AND deleted_at IS NULL;
-CREATE INDEX idx_street_tags              ON street USING GIN (tags);
-CREATE UNIQUE INDEX idx_street_source_ref ON street (source_id, source_ref)
-    WHERE source_ref IS NOT NULL AND deleted_at IS NULL;
-
-ALTER TABLE building ADD PRIMARY KEY (id);
-ALTER TABLE building ADD CONSTRAINT fk_building_street
-    FOREIGN KEY (street_id) REFERENCES street(id);
-ALTER TABLE building ADD CONSTRAINT fk_building_source
-    FOREIGN KEY (source_id) REFERENCES data_source(id);
-CREATE INDEX idx_building_street_id ON building (street_id);
-CREATE INDEX idx_building_way       ON building USING gist (way) WHERE deleted_at IS NULL;
-CREATE UNIQUE INDEX idx_building_source_ref ON building (source_id, source_ref)
-    WHERE source_ref IS NOT NULL AND deleted_at IS NULL;
-
--- ─── Set LOGGED (dependency order: roots first, then children) ───────────────
-ALTER TABLE data_source SET LOGGED;
-ALTER TABLE country     SET LOGGED;
-ALTER TABLE state       SET LOGGED;
-ALTER TABLE city        SET LOGGED;
-ALTER TABLE street      SET LOGGED;
-ALTER TABLE building    SET LOGGED;
 
 SET session_replication_role = DEFAULT;
 
