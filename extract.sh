@@ -82,7 +82,9 @@ time psql -U postgres -d gis -f ./osm_addresses_extractor.sql
 echo "exporting results to /results/osm_addresses_$2..."
 rm -rf "/results/osm_addresses_$2"
 time pg_dump -Fd -j 4 -U postgres -d gis \
+    -N import \
     -T lines -T spatial_ref_sys \
+    -T wikipedia_article -T wikipedia_redirect \
     -f "/results/osm_addresses_$2"
 chmod -R 755 "/results/osm_addresses_$2"
 echo "done: $2"
