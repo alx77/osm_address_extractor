@@ -328,7 +328,7 @@ BEGIN
         UPDATE city c
         SET importance = COALESCE(w.importance, c.importance)
         FROM wikipedia_article w
-        WHERE c.tags->'wikidata' = w.wikidata_id
+        WHERE c.tags->'wikidata' = w.wd_page_title
           AND w.importance IS NOT NULL;
     ELSE
         RAISE NOTICE 'wikipedia_article table not found, skipping Wikidata importance override';
