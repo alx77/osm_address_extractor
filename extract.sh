@@ -49,7 +49,7 @@ else
     [ -f "$WIKI_CACHE" ] && echo "cached wikimedia-importance.sql.gz is corrupted, re-downloading..."
 fi
 if [ "$WIKI_NEED_DOWNLOAD" = "1" ]; then
-    wget -q "https://nominatim.org/data/wikimedia-importance.sql.gz" -O "$WIKI_CACHE"
+    wget -q --no-use-server-timestamps "https://nominatim.org/data/wikimedia-importance.sql.gz" -O "$WIKI_CACHE"
     gunzip -t "$WIKI_CACHE" || { echo "ERROR: wikimedia-importance.sql.gz download failed/corrupted"; rm -f "$WIKI_CACHE"; exit 1; }
 fi
 echo "loading wikimedia-importance into gis..."
