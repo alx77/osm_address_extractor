@@ -347,10 +347,10 @@ WITH buildings_raw AS (
         COALESCE(b."addr:postcode", rel."addr:postcode"),
         b.way,
         str.id
-    FROM import.osm_buildings b
-    JOIN import.osm_associated_streets rel
-        ON b.osm_id = rel.member_osm_id AND rel.role = 'house'
+    FROM import.osm_associated_streets rel
+    JOIN import.osm_buildings b ON b.osm_id = rel.member_osm_id
     JOIN street str ON str.rel_osm_ids @> ARRAY[rel.rel_osm_id]
+    WHERE rel.role = 'house'
 )
 , buildings_unique AS materialized (
     SELECT DISTINCT ON (osm_id)
