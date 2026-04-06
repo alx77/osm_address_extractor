@@ -126,6 +126,15 @@ DROP INDEX IF EXISTS import.idx_osm_buildings_street;
 CREATE INDEX idx_osm_buildings_street
     ON import.osm_buildings ("addr:street");
 
+-- Partial GiST index for the building→street spatial join (branch 2).
+-- Without this PostgreSQL chooses hash join with full seq scan of 7.5M rows.
+-- With this it uses nested loop: for each street find nearby buildings spatially,
+-- then filter by name — much cheaper when addr:street selectivity is <30%.
+DROP INDEX IF EXISTS import.idx_osm_buildings_way_addr;
+CREATE INDEX idx_osm_buildings_way_addr
+    ON import.osm_buildings USING gist (way)
+    WHERE "addr:street" IS NOT NULL AND "addr:street" <> '' AND housenumber <> '';
+
 DROP INDEX IF EXISTS import.idx_osm_admin_level;
 CREATE INDEX idx_osm_admin_level
     ON import.osm_admin (admin_level);

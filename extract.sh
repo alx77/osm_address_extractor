@@ -32,7 +32,7 @@ psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='gis'" | grep -q 1
     || createdb -U postgres -E UTF8 -O gis gis
 
 echo "installing extensions..."
-psql -U postgres -d gis -c "CREATE EXTENSION IF NOT EXISTS postgis; CREATE EXTENSION IF NOT EXISTS hstore;"
+psql -U postgres -d gis -c "CREATE EXTENSION IF NOT EXISTS postgis; CREATE EXTENSION IF NOT EXISTS hstore; CREATE EXTENSION IF NOT EXISTS pg_show_plans;"
 
 echo "importing $1 into gis..."
 time /imposm3/imposm import \

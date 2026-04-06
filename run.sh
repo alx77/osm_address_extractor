@@ -110,7 +110,9 @@ for CC in "${COUNTRIES[@]}"; do
             -c checkpoint_completion_target=0.9 \
             -c wal_level=minimal \
             -c max_wal_senders=0 \
-            -c synchronous_commit=off
+            -c synchronous_commit=off \
+            -c shared_preload_libraries=pg_show_plans \
+            -c pg_show_plans.plan_format=text
 
     # Wait for postgres inside container
     echo "Waiting for postgres..."

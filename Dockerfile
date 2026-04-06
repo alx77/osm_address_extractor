@@ -10,6 +10,7 @@ RUN set -x \
  procps \
  postgresql-18-postgis-3 \
  postgresql-18-postgis-3-scripts \
+ postgresql-18-show-plans \
 && rm -rf /var/lib/apt/lists/*
 
 COPY imposm-0.14.2-linux-x86-64.tar.gz /tmp/imposm3.tar.gz
