@@ -80,7 +80,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS street (
     city_area    float8,
     tags         hstore,
     importance   float8,
-    postcode     text,
+    postcodes    text[],          -- all postcodes from buildings, sorted by frequency (postcodes[1] = most common)
     way          geometry(Geometry, 4326),
     way_3857     geometry,        -- temp column for building spatial join; dropped at end
     lon          float8,
@@ -391,18 +391,22 @@ WHERE left(ltrim(btrim(b.housenumber, '" '''), '#№'), 1) IN
 
 ANALYZE building;
 
--- ─── street.postcode — most common postcode among its buildings ───────────────
+-- ─── street.postcodes — all postcodes sorted by frequency (most common first) ──
+-- Single aggregation pass + join instead of 263k correlated subqueries.
 UPDATE street s
-SET postcode = (
-    SELECT b.postcode
-    FROM building b
-    WHERE b.street_id = s.id
-      AND b.postcode IS NOT NULL AND b.postcode <> ''
-    GROUP BY b.postcode
-    ORDER BY count(*) DESC
-    LIMIT 1
-)
-WHERE s.postcode IS NULL;
+SET postcodes = sub.postcodes
+FROM (
+    SELECT street_id,
+           array_agg(postcode ORDER BY cnt DESC, postcode) AS postcodes
+    FROM (
+        SELECT street_id, postcode, count(*) AS cnt
+        FROM building
+        WHERE postcode IS NOT NULL AND postcode <> '' AND street_id IS NOT NULL
+        GROUP BY street_id, postcode
+    ) pc
+    GROUP BY street_id
+) sub
+WHERE sub.street_id = s.id;
 
 -- ─── Drop temporary way_3857 column (before dump) ────────────────────────────
 ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
@@ -438,7 +442,7 @@ CREATE UNIQUE INDEX idx_street_active       ON street (id)            WHERE dele
 CREATE INDEX idx_street_name                ON street (name);
 CREATE INDEX idx_street_city_osm_id         ON street (city_osm_id);
 CREATE INDEX idx_street_importance          ON street (importance DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_street_postcode            ON street (postcode)       WHERE postcode IS NOT NULL AND deleted_at IS NULL;
+CREATE INDEX idx_street_postcodes           ON street USING GIN (postcodes) WHERE postcodes IS NOT NULL AND deleted_at IS NULL;
 CREATE INDEX idx_street_tags                ON street USING GIN (tags);
 CREATE INDEX idx_street_rel_osm_ids         ON street USING GIN (rel_osm_ids);
 CREATE UNIQUE INDEX idx_street_source_ref   ON street (source_id, source_ref)
