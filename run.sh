@@ -70,10 +70,8 @@ else
 fi
 
 # Build image once
-if [[ "$(docker images -q postgres-extractor 2>/dev/null)" == "" ]]; then
-    echo "Building postgres-extractor image..."
-    docker build -t postgres-extractor "$SCRIPT_DIR"
-fi
+echo "Building postgres-extractor image (--no-cache)..."
+docker build --no-cache -t postgres-extractor "$SCRIPT_DIR"
 
 mkdir -p "$SCRIPT_DIR/cache" "$SCRIPT_DIR/results"
 
