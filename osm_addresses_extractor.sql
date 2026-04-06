@@ -350,7 +350,7 @@ WITH buildings_raw AS (
     FROM import.osm_buildings b
     JOIN import.osm_associated_streets rel
         ON b.osm_id = rel.member_osm_id AND rel.role = 'house'
-    JOIN street str ON rel.rel_osm_id = ANY(str.rel_osm_ids)
+    JOIN street str ON str.rel_osm_ids @> ARRAY[rel.rel_osm_id]
 )
 , buildings_unique AS materialized (
     SELECT DISTINCT ON (osm_id)
