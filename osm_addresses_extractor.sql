@@ -458,13 +458,13 @@ CREATE INDEX idx_building_way       ON building USING gist (way) WHERE deleted_a
 CREATE UNIQUE INDEX idx_building_source_ref ON building (source_id, source_ref)
     WHERE source_ref IS NOT NULL AND deleted_at IS NULL;
 
--- ─── Set LOGGED (reverse FK order) and re-enable triggers ────────────────────
-ALTER TABLE building    SET LOGGED;
-ALTER TABLE street      SET LOGGED;
-ALTER TABLE city        SET LOGGED;
-ALTER TABLE state       SET LOGGED;
-ALTER TABLE country     SET LOGGED;
+-- ─── Set LOGGED (dependency order: roots first, then children) ───────────────
 ALTER TABLE data_source SET LOGGED;
+ALTER TABLE country     SET LOGGED;
+ALTER TABLE state       SET LOGGED;
+ALTER TABLE city        SET LOGGED;
+ALTER TABLE street      SET LOGGED;
+ALTER TABLE building    SET LOGGED;
 
 SET session_replication_role = DEFAULT;
 
