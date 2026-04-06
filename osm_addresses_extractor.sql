@@ -443,13 +443,15 @@ WHERE s.tags->'addr:postcode' IS NOT NULL
   AND s.tags->'addr:postcode' <> ''
   AND NOT (COALESCE(s.postcodes, '{}') @> ARRAY[s.tags->'addr:postcode']);
 
--- ─── Drop temporary columns and indexes (before dump) ────────────────────────
--- way_3857 was used only for the building spatial join.
--- All internal spatial-join indexes (country/state/city way, street name/rels/city)
--- remain in the dump but are used only during generation; production schema is
--- managed by geocompleter-rs/postgres/create.sql which owns all PKs, FKs, and
--- production indexes. pg_restore --data-only ignores index/constraint definitions.
+-- ─── Drop before dump ────────────────────────────────────────────────────────
+-- way_3857: temp column used only for the building spatial join.
 ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
+
+-- data_source: seeded by create.sql in production (id=1 'osm' already exists).
+-- Including it in the dump causes duplicate key conflicts on pg_restore when
+-- other countries' data is already present — so we drop it here instead of
+-- excluding it via pg_dump -T.
+DROP TABLE data_source;
 
 SET session_replication_role = DEFAULT;
 

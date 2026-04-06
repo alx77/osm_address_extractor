@@ -1,6 +1,7 @@
 #!/bin/bash
 # Restores an osm_addresses_<CC> dump into the production gis database.
-# Truncates all data tables first so the restore is always idempotent.
+# data_source is excluded from the dump (dropped in osm_addresses_extractor.sql),
+# so other countries' data is not affected.
 #
 # Usage:
 #   ./restore.sh <CC> [host] [port] [user]
@@ -25,11 +26,6 @@ fi
 
 echo "=== Restoring $CC into gis@$HOST:$PORT ==="
 
-echo "Truncating tables..."
-psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
-    "TRUNCATE building, geocompleter_changelog, street, city, state, country, data_source CASCADE;"
-
-echo "Restoring dump (sequential, --data-only)..."
 pg_restore --data-only --disable-triggers \
     -h "$HOST" -p "$PORT" -U "$USER" -d gis \
     -j 1 "$DUMP_DIR"
