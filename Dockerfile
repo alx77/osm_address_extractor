@@ -5,6 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN set -x \
 && apt-get -q update \
 && apt-get -y install --no-install-recommends \
+ ca-certificates \
  curl \
  wget \
  procps \
