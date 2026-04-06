@@ -53,6 +53,7 @@ time /imposm3/imposm import \
     -connection postgis://gis:secret@localhost/gis \
     -mapping imposm3/mapping.yaml \
     -read "$FILTERED" -write -overwritecache
+rm -f "$FILTERED"
 
 echo "extracting addresses for $2..."
 time psql -U postgres -d gis -f ./osm_addresses_extractor.sql
