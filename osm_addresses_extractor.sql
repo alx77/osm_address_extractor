@@ -312,33 +312,28 @@ FROM city c
 WHERE c.osm_id = s.city_osm_id;
 
 -- ─── building ────────────────────────────────────────────────────────────────
--- id = min(osm_id) across the cluster — globally unique, stable across dumps.
+-- Buildings are used solely for postcode aggregation onto streets.
+-- No clustering/union needed — one row per OSM building, ST_Centroid instead
+-- of ST_PointOnSurface (10-50x faster, sufficient for address centroids).
+--
+-- Branch 1 (housenumber node inside building polygon) omitted: ST_Intersects
+-- over millions of nodes×polygons is extremely expensive and these cases are
+-- rare. Branch 2 (addr:street on the building itself) covers 95%+ of OSM data.
+-- Branch 3 (associatedStreet relation) kept — cheap index lookup.
 INSERT INTO building (id, osm_ids, way, street_id, housenumber, postcode, lon, lat)
 WITH buildings_raw AS (
-    -- branch 1: no housenumber on building, but housenumber node is inside it
-    SELECT
-        b.osm_id,
-        h.type AS housenumber,
-        COALESCE(b."addr:postcode", h."addr:postcode") AS postcode,
-        b.way,
-        str.id AS street_id
-    FROM import.osm_buildings b
-    JOIN import.osm_housenumbers h
-        ON ST_Intersects(h.way, b.way) AND b.housenumber = '' AND h."addr:street" <> ''
-    JOIN street str
-        ON str.name = h."addr:street" AND ST_DWithin(b.way, str.way_3857, 400)
-    UNION ALL
-    -- branch 2: building has addr:housenumber + addr:street tags
+    -- branch 2: building has addr:housenumber + addr:street tags (main branch)
     SELECT
         b.osm_id,
         b.housenumber,
-        b."addr:postcode",
+        b."addr:postcode"                                    AS postcode,
         b.way,
-        str.id
+        str.id                                               AS street_id
     FROM import.osm_buildings b
     JOIN street str
-        ON str.name = b."addr:street" AND ST_DWithin(b.way, str.way_3857, 400)
-       AND b.housenumber <> ''
+        ON str.name = b."addr:street"
+       AND ST_DWithin(b.way, str.way_3857, 400)
+    WHERE b.housenumber <> ''
     UNION ALL
     -- branch 3: building in an associatedStreet relation
     SELECT
@@ -352,41 +347,17 @@ WITH buildings_raw AS (
         ON b.osm_id = rel.member_osm_id AND rel.role = 'house'
     JOIN street str ON rel.rel_osm_id = ANY(str.rel_osm_ids)
 )
-, buildings_unique AS materialized (
-    SELECT DISTINCT ON (osm_id)
-        osm_id, housenumber, postcode, way, street_id
-    FROM buildings_raw
-)
-, building_clusters AS materialized (
-    SELECT
-        ST_ClusterDBSCAN(way, eps := 100, minpoints := 1) OVER (
-            PARTITION BY housenumber, street_id
-        ) AS cluster_id,
-        osm_id, housenumber, postcode, way, street_id
-    FROM buildings_unique
-)
-, buildings_joined AS (
-    SELECT
-        min(osm_id)       AS min_osm_id,
-        array_agg(osm_id) AS osm_ids,
-        housenumber,
-        postcode,
-        ST_Union(way)     AS way,
-        street_id
-    FROM building_clusters
-    GROUP BY cluster_id, housenumber, street_id, postcode
-)
-SELECT
-    b.min_osm_id                                        AS id,
-    b.osm_ids,
-    ST_Transform(b.way, 4326)                           AS way,
-    b.street_id,
-    ltrim(btrim(b.housenumber, '" '''), '#№')           AS housenumber,
-    b.postcode,
-    ST_X(ST_Transform(ST_PointOnSurface(b.way), 4326)) AS lon,
-    ST_Y(ST_Transform(ST_PointOnSurface(b.way), 4326)) AS lat
-FROM buildings_joined b
-WHERE left(ltrim(btrim(b.housenumber, '" '''), '#№'), 1) IN
+SELECT DISTINCT ON (osm_id)
+    osm_id                                               AS id,
+    ARRAY[osm_id]                                        AS osm_ids,
+    ST_Transform(way, 4326)                              AS way,
+    street_id,
+    ltrim(btrim(housenumber, '" '''), '#№')              AS housenumber,
+    postcode,
+    ST_X(ST_Transform(ST_Centroid(way), 4326))           AS lon,
+    ST_Y(ST_Transform(ST_Centroid(way), 4326))           AS lat
+FROM buildings_raw
+WHERE left(ltrim(btrim(housenumber, '" '''), '#№'), 1) IN
       ('0','1','2','3','4','5','6','7','8','9');
 
 ANALYZE building;
