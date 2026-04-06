@@ -156,8 +156,8 @@ SELECT DISTINCT ON (osm_id)
 FROM import.osm_admin
 WHERE admin_level = 2;
 
--- Minimal index for subsequent spatial join (state → country)
-CREATE INDEX idx_country_way ON country USING gist (way);
+-- Final GiST index — used both for spatial join below and kept in the dump.
+CREATE INDEX idx_country_way_geo ON country USING gist (way);
 ANALYZE country;
 
 -- ─── state ───────────────────────────────────────────────────────────────────
@@ -174,8 +174,8 @@ FROM import.osm_admin sta
 JOIN country ON ST_Contains(country.way, ST_Transform(sta.way, 4326))
 WHERE sta.place = 'state' OR sta.admin_level = 4;
 
--- Minimal index for subsequent spatial join (city → state)
-CREATE INDEX idx_state_way ON state USING gist (way);
+-- Final GiST index — used both for spatial join below and kept in the dump.
+CREATE INDEX idx_state_way_geo ON state USING gist (way);
 ANALYZE state;
 
 -- ─── city ─────────────────────────────────────────────────────────────────────
@@ -198,8 +198,8 @@ JOIN state ON ST_Contains(state.way, ST_Transform(cit.way, 4326))
 WHERE cit.admin_level >= 6 OR cit.place IN ('city','hamlet','town','village')
    OR (cit.place = 'state' AND cit.name IN ('Berlin', 'Hamburg', 'Bremen'));
 
--- Minimal indexes for subsequent spatial join (lines → city)
-CREATE INDEX idx_city_way        ON city USING gist (way);
+-- Final GiST indexes — used both for spatial join below and kept in the dump.
+CREATE INDEX idx_city_way_geo    ON city USING gist (way);
 CREATE INDEX idx_city_way_origin ON city USING gist (way_origin);
 ANALYZE city;
 
@@ -296,11 +296,12 @@ FROM street_rels sr
 JOIN import.osm_roads r ON r.osm_id = sr.min_osm_id
 JOIN city cit           ON cit.osm_id = sr.city_osm_id;
 
--- Minimal indexes for building spatial join and importance update
+-- idx_street_way_3857: temp, dropped automatically when way_3857 column is dropped after building join.
+-- The rest are final index names — built here once on bulk-loaded data (2-3x faster than per-row).
 CREATE INDEX idx_street_way_3857    ON street USING gist (way_3857) WHERE way_3857 IS NOT NULL;
-CREATE INDEX idx_street_name_tmp    ON street (name);
-CREATE INDEX idx_street_rels_tmp    ON street USING GIN (rel_osm_ids);
-CREATE INDEX idx_street_city_id_tmp ON street (city_osm_id);
+CREATE INDEX idx_street_name        ON street (name);
+CREATE INDEX idx_street_rel_osm_ids ON street USING GIN (rel_osm_ids);
+CREATE INDEX idx_street_city_osm_id ON street (city_osm_id);
 ANALYZE street;
 
 -- ─── importance ───────────────────────────────────────────────────────────────
@@ -340,6 +341,10 @@ UPDATE street s
 SET importance = c.importance
 FROM city c
 WHERE c.osm_id = s.city_osm_id;
+
+-- Drop wikipedia tables — used only for importance, not included in the dump.
+DROP TABLE IF EXISTS wikipedia_article;
+DROP TABLE IF EXISTS wikipedia_redirect;
 
 -- ─── building ────────────────────────────────────────────────────────────────
 -- id = min(osm_id) across the cluster — globally unique, stable across dumps.
@@ -448,34 +453,31 @@ ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
 ALTER TABLE data_source ADD PRIMARY KEY (id);
 
 ALTER TABLE country ADD PRIMARY KEY (osm_id);
-CREATE INDEX idx_country_way_geo ON country USING gist (way);
+-- idx_country_way_geo: built earlier (spatial join), kept in dump.
 
 ALTER TABLE state ADD PRIMARY KEY (osm_id);
 ALTER TABLE state ADD CONSTRAINT fk_state_country
     FOREIGN KEY (country_osm_id) REFERENCES country(osm_id);
 CREATE INDEX idx_state_country_osm_id ON state (country_osm_id);
-CREATE INDEX idx_state_way_geo        ON state USING gist (way);
+-- idx_state_way_geo: built earlier (spatial join), kept in dump.
 
 ALTER TABLE city ADD PRIMARY KEY (osm_id);
 ALTER TABLE city ADD CONSTRAINT fk_city_state
     FOREIGN KEY (state_osm_id) REFERENCES state(osm_id);
 CREATE INDEX idx_city_state_osm_id ON city (state_osm_id);
-CREATE INDEX idx_city_way_geo      ON city USING gist (way);
-CREATE INDEX idx_city_way_origin   ON city USING gist (way_origin);
+-- idx_city_way_geo, idx_city_way_origin: built earlier (spatial join), kept in dump.
 
 ALTER TABLE street ADD PRIMARY KEY (id);
 ALTER TABLE street ADD CONSTRAINT fk_street_city
     FOREIGN KEY (city_osm_id) REFERENCES city(osm_id);
 ALTER TABLE street ADD CONSTRAINT fk_street_source
     FOREIGN KEY (source_id) REFERENCES data_source(id);
-CREATE UNIQUE INDEX idx_street_active       ON street (id)            WHERE deleted_at IS NULL;
-CREATE INDEX idx_street_name                ON street (name);
-CREATE INDEX idx_street_city_osm_id         ON street (city_osm_id);
-CREATE INDEX idx_street_importance          ON street (importance DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_street_postcodes           ON street USING GIN (postcodes) WHERE postcodes IS NOT NULL AND deleted_at IS NULL;
-CREATE INDEX idx_street_tags                ON street USING GIN (tags);
-CREATE INDEX idx_street_rel_osm_ids         ON street USING GIN (rel_osm_ids);
-CREATE UNIQUE INDEX idx_street_source_ref   ON street (source_id, source_ref)
+CREATE UNIQUE INDEX idx_street_active     ON street (id) WHERE deleted_at IS NULL;
+-- idx_street_name, idx_street_city_osm_id, idx_street_rel_osm_ids: built earlier, kept in dump.
+CREATE INDEX idx_street_importance        ON street (importance DESC) WHERE deleted_at IS NULL;
+CREATE INDEX idx_street_postcodes         ON street USING GIN (postcodes) WHERE postcodes IS NOT NULL AND deleted_at IS NULL;
+CREATE INDEX idx_street_tags              ON street USING GIN (tags);
+CREATE UNIQUE INDEX idx_street_source_ref ON street (source_id, source_ref)
     WHERE source_ref IS NOT NULL AND deleted_at IS NULL;
 
 ALTER TABLE building ADD PRIMARY KEY (id);
