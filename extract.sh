@@ -34,6 +34,23 @@ psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='gis'" | grep -q 1
 echo "installing extensions..."
 psql -U postgres -d gis -c "CREATE EXTENSION IF NOT EXISTS postgis; CREATE EXTENSION IF NOT EXISTS hstore; CREATE EXTENSION IF NOT EXISTS pg_show_plans;"
 
+WIKI_CACHE="/cache/wikimedia-importance.sql.gz"
+WIKI_MAX_DAYS=30
+if [ -f "$WIKI_CACHE" ]; then
+    WIKI_AGE_DAYS=$(( ( $(date +%s) - $(stat -c %Y "$WIKI_CACHE") ) / 86400 ))
+    if [ "$WIKI_AGE_DAYS" -lt "$WIKI_MAX_DAYS" ]; then
+        echo "using cached wikimedia-importance.sql.gz (${WIKI_AGE_DAYS}d old)"
+    else
+        echo "wikimedia-importance cache is ${WIKI_AGE_DAYS}d old, re-downloading..."
+        wget -q "https://nominatim.org/data/wikimedia-importance.sql.gz" -O "$WIKI_CACHE"
+    fi
+else
+    echo "downloading wikimedia-importance.sql.gz..."
+    wget -q "https://nominatim.org/data/wikimedia-importance.sql.gz" -O "$WIKI_CACHE"
+fi
+echo "loading wikimedia-importance into gis..."
+gunzip -c "$WIKI_CACHE" | psql -U postgres -d gis -q
+
 FILTERED="${FILENAME%.osm.pbf}-filtered.osm.pbf"
 echo "filtering PBF with osmium (roads, buildings, admin, addresses)..."
 time osmium tags-filter "$FILENAME" \

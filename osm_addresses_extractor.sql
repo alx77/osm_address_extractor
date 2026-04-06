@@ -63,6 +63,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS city (
     tags         hstore,
     admin_level  integer,
     state_osm_id bigint,
+    importance   float8,
     way_origin   geometry(Geometry, 3857),
     way          geometry(Geometry, 4326),
     lon          float8,
@@ -232,7 +233,7 @@ WITH fragments AS materialized (
 )
 SELECT DISTINCT ON (osm_id) *
 FROM fragments
-ORDER BY osm_id, place_order;
+ORDER BY osm_id, admin_level ASC, place_order;
 
 CREATE UNIQUE INDEX idx_lines_id ON lines (osm_id);
 ALTER TABLE lines ADD CONSTRAINT pk_lines PRIMARY KEY USING INDEX idx_lines_id;
@@ -303,11 +304,12 @@ CREATE INDEX idx_street_city_id_tmp ON street (city_osm_id);
 ANALYZE street;
 
 -- ─── importance ───────────────────────────────────────────────────────────────
-UPDATE street s
+-- Step 1: population-based fallback importance for all cities
+UPDATE city
 SET importance = LEAST(1.0,
     LN(GREATEST(100, COALESCE(
-        NULLIF(regexp_replace(c.tags->'population', '[^0-9]', '', 'g'), '')::float,
-        CASE c.place
+        NULLIF(regexp_replace(tags->'population', '[^0-9]', '', 'g'), '')::float,
+        CASE place
             WHEN 'state'   THEN 2000000
             WHEN 'city'    THEN 500000
             WHEN 'town'    THEN 30000
@@ -316,7 +318,19 @@ SET importance = LEAST(1.0,
             ELSE                 5000
         END
     ))) / LN(10000000.0)
-)
+);
+
+-- Step 2: override with Wikidata/Wikipedia pagerank where available
+-- (wikimedia-importance.sql.gz loaded by extract.sh into wikipedia_article table)
+UPDATE city c
+SET importance = COALESCE(w.importance, c.importance)
+FROM wikipedia_article w
+WHERE c.tags->'wikidata' = w.wikidata_id
+  AND w.importance IS NOT NULL;
+
+-- Step 3: propagate city importance to streets
+UPDATE street s
+SET importance = c.importance
 FROM city c
 WHERE c.osm_id = s.city_osm_id;
 
@@ -407,6 +421,15 @@ FROM (
     GROUP BY street_id
 ) sub
 WHERE sub.street_id = s.id;
+
+-- ─── street.postcodes — fill from street's own addr:postcode tag if missing ───
+-- Streets with no buildings (or buildings without postcode) still get a postcode
+-- if the street way itself carries addr:postcode.
+UPDATE street s
+SET postcodes = ARRAY[s.tags->'addr:postcode'] || COALESCE(s.postcodes, '{}')
+WHERE s.tags->'addr:postcode' IS NOT NULL
+  AND s.tags->'addr:postcode' <> ''
+  AND NOT (COALESCE(s.postcodes, '{}') @> ARRAY[s.tags->'addr:postcode']);
 
 -- ─── Drop temporary way_3857 column (before dump) ────────────────────────────
 ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
