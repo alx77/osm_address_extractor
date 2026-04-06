@@ -1,5 +1,4 @@
 -- ─── Session tuning ──────────────────────────────────────────────────────────
--- Heavy spatial joins and recursive CTEs need memory to avoid spilling to disk.
 SET work_mem = '512MB';
 SET maintenance_work_mem = '1GB';
 -- Uncomment when running under Podman rootless: parallel workers fail there due to
@@ -7,7 +6,158 @@ SET maintenance_work_mem = '1GB';
 -- SET max_parallel_workers_per_gather = 0;
 
 -- ─── Extensions ──────────────────────────────────────────────────────────────
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS hstore;
 CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+-- ─── Schema (CREATE IF NOT EXISTS — safe to run against existing production DB) ──
+-- street.id  = osm_ids[1]: minimum OSM road-segment ID in the cluster.
+-- building.id = osm_ids[1]: minimum OSM building ID in the cluster.
+-- Both are globally unique across OSM and stable between dump refreshes.
+-- External (non-OSM) data uses nextval('external_id_seq') starting at 5×10^15.
+
+CREATE TABLE IF NOT EXISTS data_source (
+    id   smallint PRIMARY KEY,
+    name text NOT NULL UNIQUE
+);
+INSERT INTO data_source (id, name) VALUES (1, 'osm') ON CONFLICT DO NOTHING;
+
+CREATE SEQUENCE IF NOT EXISTS external_id_seq START 5000000000000000;
+
+CREATE TABLE IF NOT EXISTS country (
+    osm_id     bigint PRIMARY KEY,
+    name       text,
+    tags       hstore,
+    way        geometry(Geometry, 4326),
+    lon        float8,
+    lat        float8,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    deleted_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_country_way ON country USING gist (way);
+
+CREATE TABLE IF NOT EXISTS state (
+    osm_id         bigint PRIMARY KEY,
+    name           text,
+    country_osm_id bigint REFERENCES country(osm_id),
+    tags           hstore,
+    way            geometry(Geometry, 4326),
+    lon            float8,
+    lat            float8,
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    deleted_at     timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_state_way            ON state USING gist (way);
+CREATE INDEX IF NOT EXISTS idx_state_country_osm_id ON state (country_osm_id);
+
+CREATE TABLE IF NOT EXISTS city (
+    osm_id       bigint PRIMARY KEY,
+    name         text,
+    place        text,
+    postal_code  text,
+    tags         hstore,
+    admin_level  integer,
+    state_osm_id bigint REFERENCES state(osm_id),
+    way_origin   geometry(Geometry, 3857),
+    way          geometry(Geometry, 4326),
+    lon          float8,
+    lat          float8,
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    deleted_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_city_way          ON city USING gist (way);
+CREATE INDEX IF NOT EXISTS idx_city_way_origin   ON city USING gist (way_origin);
+CREATE INDEX IF NOT EXISTS idx_city_state_osm_id ON city (state_osm_id);
+
+CREATE TABLE IF NOT EXISTS street (
+    id           bigint PRIMARY KEY,
+    name         text NOT NULL,
+    city_osm_id  bigint REFERENCES city(osm_id),
+    rel_osm_ids  bigint[],
+    osm_ids      bigint[],
+    city_area    float8,
+    tags         hstore,
+    importance   float8,
+    postcode     text,
+    way          geometry(Geometry, 4326),
+    lon          float8,
+    lat          float8,
+    source_id    smallint NOT NULL DEFAULT 1 REFERENCES data_source(id),
+    source_ref   text,
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    deleted_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_street_city_osm_id ON street (city_osm_id);
+CREATE INDEX IF NOT EXISTS idx_street_name        ON street (name);
+CREATE INDEX IF NOT EXISTS idx_street_tags        ON street USING gin (tags);
+CREATE INDEX IF NOT EXISTS idx_street_rel_osm_ids ON street USING gin (rel_osm_ids);
+CREATE INDEX IF NOT EXISTS idx_street_importance
+    ON street (importance DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_street_postcode
+    ON street (postcode) WHERE postcode IS NOT NULL AND deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_street_source_ref
+    ON street (source_id, source_ref)
+    WHERE source_ref IS NOT NULL AND deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS building (
+    id           bigint PRIMARY KEY,
+    street_id    bigint REFERENCES street(id),
+    osm_ids      bigint[],
+    housenumber  text,
+    postcode     text,
+    way          geometry(Geometry, 4326),
+    lon          float8,
+    lat          float8,
+    source_id    smallint NOT NULL DEFAULT 1 REFERENCES data_source(id),
+    source_ref   text,
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    deleted_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_building_street_id ON building (street_id);
+CREATE INDEX IF NOT EXISTS idx_building_way
+    ON building USING gist (way) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_building_osm_id
+    ON building ((osm_ids[1]))
+    WHERE osm_ids IS NOT NULL AND deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_building_source_ref
+    ON building (source_id, source_ref)
+    WHERE source_ref IS NOT NULL AND deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS geocompleter_changelog (
+    id          bigserial PRIMARY KEY,
+    street_id   bigint NOT NULL,
+    change_type text NOT NULL CHECK (change_type IN ('insert', 'update', 'delete')),
+    changed_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_changelog_changed_at ON geocompleter_changelog (changed_at);
+
+CREATE OR REPLACE FUNCTION street_changelog_fn()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO geocompleter_changelog (street_id, change_type) VALUES (NEW.id, 'insert');
+    ELSIF TG_OP = 'UPDATE' THEN
+        IF OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
+            INSERT INTO geocompleter_changelog (street_id, change_type) VALUES (NEW.id, 'delete');
+        ELSE
+            INSERT INTO geocompleter_changelog (street_id, change_type) VALUES (NEW.id, 'update');
+        END IF;
+    ELSIF TG_OP = 'DELETE' THEN
+        INSERT INTO geocompleter_changelog (street_id, change_type) VALUES (OLD.id, 'delete');
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS street_changelog ON street;
+CREATE TRIGGER street_changelog
+    AFTER INSERT OR UPDATE OR DELETE ON street
+    FOR EACH ROW EXECUTE FUNCTION street_changelog_fn();
+
+-- ─── Bulk load: disable triggers to avoid flooding changelog ─────────────────
+-- session_replication_role=replica suppresses all triggers for this session.
+-- Re-enabled at the end of the script.
+SET session_replication_role = replica;
 
 -- ─── Indexes on raw import tables ────────────────────────────────────────────
 DROP INDEX IF EXISTS import.idx_osm_associated_streets_tags;
@@ -26,7 +176,6 @@ DROP INDEX IF EXISTS import.idx_osm_buildings_street;
 CREATE INDEX idx_osm_buildings_street
 ON import.osm_buildings ("addr:street");
 
--- Speed up admin_level / place filtering (used in every hierarchy step)
 DROP INDEX IF EXISTS import.idx_osm_admin_level;
 CREATE INDEX idx_osm_admin_level
 ON import.osm_admin (admin_level);
@@ -36,85 +185,89 @@ CREATE INDEX idx_osm_admin_place
 ON import.osm_admin (place);
 
 -- ─── country ─────────────────────────────────────────────────────────────────
-DROP TABLE IF EXISTS country;
-CREATE TABLE country AS
+INSERT INTO country (osm_id, name, tags, way, lon, lat)
 SELECT DISTINCT ON (osm_id)
-	osm_id,
-	name,
-	tags,
-	ST_Transform(way, 4326) AS way,
-	ST_X(ST_Transform(ST_Centroid(way), 4326)) AS lon,
-	ST_Y(ST_Transform(ST_Centroid(way), 4326)) AS lat
+    osm_id,
+    name,
+    tags,
+    ST_Transform(way, 4326) AS way,
+    ST_X(ST_Transform(ST_Centroid(way), 4326)) AS lon,
+    ST_Y(ST_Transform(ST_Centroid(way), 4326)) AS lat
 FROM import.osm_admin
-WHERE admin_level = 2;
+WHERE admin_level = 2
+ON CONFLICT (osm_id) DO UPDATE SET
+    name       = EXCLUDED.name,
+    tags       = EXCLUDED.tags,
+    way        = EXCLUDED.way,
+    lon        = EXCLUDED.lon,
+    lat        = EXCLUDED.lat,
+    updated_at = now(),
+    deleted_at = NULL;
 
--- Needed immediately for the state spatial JOIN below
-CREATE INDEX idx_country_way ON country USING gist (way);
-
-DROP INDEX IF EXISTS idx_country_osm_id;
-CREATE UNIQUE INDEX idx_country_osm_id ON country (osm_id);
-ALTER TABLE country ADD CONSTRAINT pk_country PRIMARY KEY USING INDEX idx_country_osm_id;
-
+CREATE INDEX IF NOT EXISTS idx_country_way_tmp ON country USING gist (way);
 ANALYZE country;
 
 -- ─── state ───────────────────────────────────────────────────────────────────
-DROP TABLE IF EXISTS state;
-CREATE TABLE state AS
+INSERT INTO state (osm_id, name, country_osm_id, tags, way, lon, lat)
 SELECT DISTINCT ON (sta.osm_id)
-	sta.osm_id,
-	sta.name,
-	country.osm_id AS country_osm_id,
-	sta.tags,
-	ST_Transform(sta.way, 4326) AS way,
-	ST_X(ST_Transform(ST_Centroid(sta.way), 4326)) AS lon,
-	ST_Y(ST_Transform(ST_Centroid(sta.way), 4326)) AS lat
+    sta.osm_id,
+    sta.name,
+    country.osm_id AS country_osm_id,
+    sta.tags,
+    ST_Transform(sta.way, 4326) AS way,
+    ST_X(ST_Transform(ST_Centroid(sta.way), 4326)) AS lon,
+    ST_Y(ST_Transform(ST_Centroid(sta.way), 4326)) AS lat
 FROM import.osm_admin sta
 JOIN country ON (ST_Contains(country.way, ST_Transform(sta.way, 4326)))
-WHERE place = 'state' OR admin_level = 4;
+WHERE sta.place = 'state' OR sta.admin_level = 4
+ON CONFLICT (osm_id) DO UPDATE SET
+    name           = EXCLUDED.name,
+    country_osm_id = EXCLUDED.country_osm_id,
+    tags           = EXCLUDED.tags,
+    way            = EXCLUDED.way,
+    lon            = EXCLUDED.lon,
+    lat            = EXCLUDED.lat,
+    updated_at     = now(),
+    deleted_at     = NULL;
 
--- Needed immediately for the city spatial JOIN below
-CREATE INDEX idx_state_way ON state USING gist (way);
-
-DROP INDEX IF EXISTS idx_state_osm_id;
-CREATE UNIQUE INDEX idx_state_osm_id ON state (osm_id);
-ALTER TABLE state ADD CONSTRAINT pk_state PRIMARY KEY USING INDEX idx_state_osm_id;
-
-DROP INDEX IF EXISTS idx_state_country_osm_id;
-CREATE INDEX idx_state_country_osm_id ON state (country_osm_id);
-
+CREATE INDEX IF NOT EXISTS idx_state_way_tmp ON state USING gist (way);
 ANALYZE state;
 
 -- ─── city ─────────────────────────────────────────────────────────────────────
-DROP TABLE IF EXISTS city;
-CREATE TABLE city AS
+INSERT INTO city (osm_id, name, place, postal_code, tags, admin_level,
+                  state_osm_id, way_origin, way, lon, lat)
 SELECT DISTINCT ON (cit.osm_id)
-	cit.osm_id,
-	cit.name,
-	cit.place,
-	cit.postal_code,
-	cit.tags,
-	cit.admin_level,
-	state.osm_id AS state_osm_id,
-	cit.way AS way_origin,
-	ST_Transform(cit.way, 4326) AS way,
-	ST_X(ST_Transform(ST_Centroid(cit.way), 4326)) AS lon,
-	ST_Y(ST_Transform(ST_Centroid(cit.way), 4326)) AS lat
+    cit.osm_id,
+    cit.name,
+    cit.place,
+    cit.postal_code,
+    cit.tags,
+    cit.admin_level,
+    state.osm_id AS state_osm_id,
+    cit.way AS way_origin,
+    ST_Transform(cit.way, 4326) AS way,
+    ST_X(ST_Transform(ST_Centroid(cit.way), 4326)) AS lon,
+    ST_Y(ST_Transform(ST_Centroid(cit.way), 4326)) AS lat
 FROM import.osm_admin cit
 JOIN state ON (ST_Contains(state.way, ST_Transform(cit.way, 4326)))
 WHERE cit.admin_level >= 6 OR cit.place IN ('city','hamlet','town','village')
-   OR (cit.place = 'state' AND cit.name IN ('Berlin', 'Hamburg', 'Bremen'));
+   OR (cit.place = 'state' AND cit.name IN ('Berlin', 'Hamburg', 'Bremen'))
+ON CONFLICT (osm_id) DO UPDATE SET
+    name         = EXCLUDED.name,
+    place        = EXCLUDED.place,
+    postal_code  = EXCLUDED.postal_code,
+    tags         = EXCLUDED.tags,
+    admin_level  = EXCLUDED.admin_level,
+    state_osm_id = EXCLUDED.state_osm_id,
+    way_origin   = EXCLUDED.way_origin,
+    way          = EXCLUDED.way,
+    lon          = EXCLUDED.lon,
+    lat          = EXCLUDED.lat,
+    updated_at   = now(),
+    deleted_at   = NULL;
 
-CREATE INDEX idx_cities_way ON public.city USING gist (way);
-
--- way_origin (EPSG:3857) is used for the lines spatial JOIN — same CRS as roads
-CREATE INDEX idx_cities_way_origin ON public.city USING gist (way_origin);
-
-DROP INDEX IF EXISTS idx_city_id;
-CREATE UNIQUE INDEX idx_city_id ON city (osm_id);
-ALTER TABLE city ADD CONSTRAINT pk_city PRIMARY KEY USING INDEX idx_city_id;
-
-CREATE INDEX idx_city_state_osm_id ON city (state_osm_id);
-
+CREATE INDEX IF NOT EXISTS idx_city_way_tmp        ON city USING gist (way);
+CREATE INDEX IF NOT EXISTS idx_city_way_origin_tmp ON city USING gist (way_origin);
 ANALYZE city;
 
 -- ─── lines (temp — only needed to build street, never exported) ───────────────
@@ -122,25 +275,28 @@ DROP TABLE IF EXISTS lines;
 CREATE TEMP TABLE lines AS
 WITH fragments AS materialized (
     SELECT
-	   r.osm_id,
-	   c.osm_id as city_osm_id,
-	   r.name,
-	   (c.tags->'admin_level')::int as admin_level,
-	   c.place,
-	   case c.place
-           when 'state' then 1
-           when 'city' then 2
-           when 'hamlet' then 3
-           when 'town' then 4
-           when 'village' then 5
-	       else 6
-       end AS place_order,
-	   r.tags,
-	   r.way,
-	   ST_X(ST_PointN(ST_ExteriorRing(ST_Envelope(r.way)),1)) AS leftx
+        r.osm_id,
+        c.osm_id AS city_osm_id,
+        r.name,
+        (c.tags->'admin_level')::int AS admin_level,
+        c.place,
+        CASE c.place
+            WHEN 'state'  THEN 1
+            WHEN 'city'   THEN 2
+            WHEN 'hamlet' THEN 3
+            WHEN 'town'   THEN 4
+            WHEN 'village' THEN 5
+            ELSE 6
+        END AS place_order,
+        r.tags,
+        r.way,
+        ST_X(ST_PointN(ST_ExteriorRing(ST_Envelope(r.way)),1)) AS leftx
     FROM import.osm_roads r
     JOIN city c ON (ST_Contains(c.way_origin, r.way))
-    WHERE type IN ('trunk','road','footway','primary','secondary','tertiary','primary_link','secondary_link','tertiary_link','construction','pedestrian','residential','track','steps','proposed','trunk_link','living_street','unclassified','unknown','motorway')
+    WHERE type IN ('trunk','road','footway','primary','secondary','tertiary',
+                   'primary_link','secondary_link','tertiary_link','construction',
+                   'pedestrian','residential','track','steps','proposed',
+                   'trunk_link','living_street','unclassified','unknown','motorway')
 )
 SELECT DISTINCT ON (osm_id) *
 FROM fragments
@@ -154,12 +310,10 @@ CREATE INDEX idx_lines_idx_name_way
 
 ANALYZE lines;
 
--- ─── street (ST_ClusterDBSCAN replaces recursive CTE) ────────────────────────
--- ST_ClusterDBSCAN groups road segments with the same name within the same city
--- that are within 1000m of each other — same semantics as the old recursive CTE,
--- but a single pass instead of iterative graph traversal.
-DROP TABLE IF EXISTS street;
-CREATE TABLE street AS
+-- ─── street ──────────────────────────────────────────────────────────────────
+-- id = osm_ids[1]: minimum OSM segment ID in the cluster — stable across dumps.
+INSERT INTO street (id, name, rel_osm_ids, osm_ids, city_osm_id,
+                    city_area, tags, way, lon, lat)
 WITH clusters AS materialized (
     SELECT
         ST_ClusterDBSCAN(way, eps := 1000, minpoints := 1) OVER (
@@ -173,24 +327,22 @@ WITH clusters AS materialized (
 )
 , street_groups AS materialized (
     SELECT
-        row_number() OVER () AS id,
+        row_number() OVER () AS _row,   -- internal CTE join key only
         name,
         city_osm_id,
-        array_agg(osm_id ORDER BY osm_id) AS osm_ids,
+        array_agg(osm_id ORDER BY osm_id) AS osm_ids,  -- sorted: [1]=min
         ST_Union(way) AS way
     FROM clusters
     GROUP BY name, city_osm_id, cluster_id
 )
 , street_unnested AS (
-    -- Unnest osm_ids so the JOIN with osm_associated_streets can use
-    -- idx_osm_associated_streets_member instead of ANY(array) scan
-    SELECT sg.id, sg.name, sg.city_osm_id, sg.osm_ids, sg.way,
+    SELECT sg._row, sg.name, sg.city_osm_id, sg.osm_ids, sg.way,
            unnest(sg.osm_ids) AS member_osm_id
     FROM street_groups sg
 )
 , street_rels AS (
     SELECT
-        su.id,
+        su._row,
         su.name,
         su.city_osm_id,
         su.osm_ids,
@@ -198,50 +350,62 @@ WITH clusters AS materialized (
         array_remove(array_agg(DISTINCT r.rel_osm_id), NULL) AS rel_osm_ids
     FROM street_unnested su
     LEFT JOIN import.osm_associated_streets r
-        ON r.member_osm_id = su.member_osm_id AND r.name = su.name AND r.role = 'street'
-    GROUP BY su.id, su.name, su.city_osm_id, su.osm_ids, su.way
+        ON r.member_osm_id = su.member_osm_id
+       AND r.name = su.name
+       AND r.role = 'street'
+    GROUP BY su._row, su.name, su.city_osm_id, su.osm_ids, su.way
 )
-SELECT DISTINCT ON (sr.id)
-    sr.id,
+SELECT DISTINCT ON (sr.osm_ids[1])
+    sr.osm_ids[1]      AS id,      -- stable OSM-based PK
     sr.name,
     sr.rel_osm_ids,
     sr.osm_ids,
     sr.city_osm_id,
-    ST_Area(cit.way) AS city_area,
+    ST_Area(cit.way)   AS city_area,
     r.tags,
-    -- way_3857 kept temporarily for building ST_DWithin joins (same CRS as osm_buildings)
-    -- dropped after building table is constructed
-    sr.way AS way_3857,
+    -- way_3857 as way temporarily; transformed to 4326 below after importance update
     ST_Transform(sr.way, 4326) AS way,
     ST_X(ST_Transform(ST_PointOnSurface(sr.way), 4326)) AS lon,
     ST_Y(ST_Transform(ST_PointOnSurface(sr.way), 4326)) AS lat
 FROM street_rels sr
-JOIN import.osm_roads r ON r.osm_id = sr.osm_ids[1]
-JOIN city cit ON cit.osm_id = sr.city_osm_id;
+JOIN import.osm_roads r   ON r.osm_id = sr.osm_ids[1]
+JOIN city cit             ON cit.osm_id = sr.city_osm_id
+ON CONFLICT (id) DO UPDATE SET
+    name        = EXCLUDED.name,
+    rel_osm_ids = EXCLUDED.rel_osm_ids,
+    osm_ids     = EXCLUDED.osm_ids,
+    city_osm_id = EXCLUDED.city_osm_id,
+    city_area   = EXCLUDED.city_area,
+    tags        = EXCLUDED.tags,
+    way         = EXCLUDED.way,
+    lon         = EXCLUDED.lon,
+    lat         = EXCLUDED.lat,
+    updated_at  = now(),
+    deleted_at  = NULL;
 
 DROP INDEX IF EXISTS idx_street_id;
-CREATE UNIQUE INDEX idx_street_id ON street (id);
-ALTER TABLE street ADD CONSTRAINT pk_street PRIMARY KEY USING INDEX idx_street_id;
+CREATE UNIQUE INDEX idx_street_id ON street (id) WHERE deleted_at IS NULL;
 
-CREATE INDEX idx_street_name ON street (name);
-CREATE INDEX idx_street_tags ON street USING GIN (tags);
-CREATE INDEX idx_street_rel_osm_ids ON street USING GIN (rel_osm_ids);
--- GiST on way_3857 (EPSG:3857) for fast ST_DWithin in building joins
-CREATE INDEX idx_street_way_3857 ON street USING gist (way_3857);
-CREATE INDEX idx_street_city_osm_id ON street (city_osm_id);
+CREATE INDEX IF NOT EXISTS idx_street_name2        ON street (name)               WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_street_tags2        ON street USING GIN (tags);
+CREATE INDEX IF NOT EXISTS idx_street_rel_osm_ids2 ON street USING GIN (rel_osm_ids);
+
+-- way_3857 kept temporarily for building ST_DWithin joins (same CRS as osm_buildings)
+ALTER TABLE street ADD COLUMN IF NOT EXISTS way_3857 geometry;
+UPDATE street s
+SET way_3857 = (
+    SELECT ST_Union(r.way)
+    FROM import.osm_roads r
+    WHERE r.osm_id = ANY(s.osm_ids)
+);
+CREATE INDEX idx_street_way_3857 ON street USING gist (way_3857) WHERE way_3857 IS NOT NULL;
+CREATE INDEX idx_street_city_osm_id2 ON street (city_osm_id) WHERE deleted_at IS NULL;
 
 -- ─── importance ───────────────────────────────────────────────────────────────
--- Logarithmic scale: LN(population) / LN(10_000_000) → [0, 1]
--- Uses real population from OSM tags when available, falls back to place type.
--- Universal: works the same for DE, UA, PL and any other country.
-ALTER TABLE street ADD COLUMN importance float;
-
 UPDATE street s
 SET importance = LEAST(1.0,
     LN(GREATEST(100, COALESCE(
-        -- Strip non-numeric chars to handle "1,500,000" style values
         NULLIF(regexp_replace(c.tags->'population', '[^0-9]', '', 'g'), '')::float,
-        -- Fallback: representative population estimate per place type
         CASE c.place
             WHEN 'state'   THEN 2000000
             WHEN 'city'    THEN 500000
@@ -255,13 +419,14 @@ SET importance = LEAST(1.0,
 FROM city c
 WHERE c.osm_id = s.city_osm_id;
 
-CREATE INDEX idx_street_importance ON street (importance DESC);
+CREATE INDEX IF NOT EXISTS idx_street_importance2
+    ON street (importance DESC) WHERE deleted_at IS NULL;
 
 ANALYZE street;
 
--- ─── building (ST_ClusterDBSCAN replaces recursive anchors CTE) ──────────────
-DROP TABLE IF EXISTS building;
-CREATE TABLE building AS
+-- ─── building ────────────────────────────────────────────────────────────────
+-- id = osm_ids[1]: minimum OSM building ID in the cluster.
+INSERT INTO building (id, osm_ids, way, street_id, housenumber, postcode, lon, lat)
 WITH buildings_raw AS (
     -- branch 1: building polygon has no housenumber, but a housenumber node is inside it
     SELECT
@@ -271,29 +436,34 @@ WITH buildings_raw AS (
         b.way,
         str.id AS street_id
     FROM import.osm_buildings b
-    JOIN import.osm_housenumbers h ON ST_Intersects(h.way, b.way) AND b.housenumber = '' AND h."addr:street" <> ''
-    JOIN street str ON str.name = h."addr:street" AND ST_DWithin(b.way, str.way_3857, 400)
+    JOIN import.osm_housenumbers h
+        ON ST_Intersects(h.way, b.way) AND b.housenumber = '' AND h."addr:street" <> ''
+    JOIN street str
+        ON str.name = h."addr:street" AND ST_DWithin(b.way, str.way_3857, 400)
     UNION ALL
     -- branch 2: building has addr:housenumber and addr:street tags
     SELECT
         b.osm_id,
-        b.housenumber AS housenumber,
-        b."addr:postcode" AS postcode,
+        b.housenumber,
+        b."addr:postcode",
         b.way,
-        str.id AS street_id
+        str.id
     FROM import.osm_buildings b
-    JOIN street str ON str.name = b."addr:street" AND ST_DWithin(b.way, str.way_3857, 400) AND b.housenumber <> ''
+    JOIN street str
+        ON str.name = b."addr:street" AND ST_DWithin(b.way, str.way_3857, 400)
+       AND b.housenumber <> ''
     UNION ALL
     -- branch 3: building belongs to an associatedStreet relation
     SELECT
         b.osm_id,
         b.housenumber,
-        COALESCE(b."addr:postcode", rel."addr:postcode") AS postcode,
+        COALESCE(b."addr:postcode", rel."addr:postcode"),
         b.way,
-        str.id AS street_id
+        str.id
     FROM import.osm_buildings b
-    JOIN import.osm_associated_streets rel ON (b.osm_id = rel.member_osm_id AND rel.role = 'house')
-    JOIN street str ON (rel.rel_osm_id = ANY(str.rel_osm_ids))
+    JOIN import.osm_associated_streets rel
+        ON b.osm_id = rel.member_osm_id AND rel.role = 'house'
+    JOIN street str ON rel.rel_osm_id = ANY(str.rel_osm_ids)
 )
 , buildings_unique AS materialized (
     SELECT DISTINCT ON (osm_id)
@@ -314,7 +484,7 @@ WITH buildings_raw AS (
 )
 , buildings_joined AS (
     SELECT
-        array_agg(DISTINCT osm_id) AS osm_ids,
+        array_agg(DISTINCT osm_id ORDER BY osm_id) AS osm_ids,  -- sorted: [1]=min
         housenumber,
         postcode,
         ST_Union(way) AS way,
@@ -323,34 +493,34 @@ WITH buildings_raw AS (
     GROUP BY cluster_id, housenumber, street_id, postcode
 )
 SELECT
-    row_number() OVER () AS id,
+    b.osm_ids[1]      AS id,        -- stable OSM-based PK
     b.osm_ids,
     ST_Transform(b.way, 4326) AS way,
     b.street_id,
-    housenumber,
-    postcode,
+    ltrim(btrim(b.housenumber, '" '''), '#№') AS housenumber,
+    b.postcode,
     ST_X(ST_Transform(ST_PointOnSurface(b.way), 4326)) AS lon,
     ST_Y(ST_Transform(ST_PointOnSurface(b.way), 4326)) AS lat
-FROM buildings_joined b;
+FROM buildings_joined b
+WHERE left(ltrim(btrim(b.housenumber, '" '''), '#№'), 1) IN
+      ('0','1','2','3','4','5','6','7','8','9')
+ON CONFLICT (id) DO UPDATE SET
+    osm_ids     = EXCLUDED.osm_ids,
+    way         = EXCLUDED.way,
+    street_id   = EXCLUDED.street_id,
+    housenumber = EXCLUDED.housenumber,
+    postcode    = EXCLUDED.postcode,
+    lon         = EXCLUDED.lon,
+    lat         = EXCLUDED.lat,
+    updated_at  = now(),
+    deleted_at  = NULL;
 
-UPDATE building SET housenumber = ltrim(btrim(housenumber,'" '''),'#№') WHERE left(housenumber,1) NOT IN ('0','1','2','3','4','5','6','7','8','9');
-DELETE FROM building WHERE left(housenumber,1) NOT IN ('0','1','2','3','4','5','6','7','8','9');
-
-DROP INDEX IF EXISTS idx_buildings_way;
-CREATE INDEX idx_buildings_way ON public.building USING gist (way);
-
-DROP INDEX IF EXISTS idx_building_id;
-CREATE UNIQUE INDEX idx_building_id ON public.building (id);
-
-DROP INDEX IF EXISTS idx_building_street_id;
-CREATE INDEX idx_building_street_id ON public.building (street_id);
-
-ALTER TABLE building ADD CONSTRAINT pk_building PRIMARY KEY USING INDEX idx_building_id;
+CREATE INDEX IF NOT EXISTS idx_buildings_way2
+    ON building USING gist (way) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_building_street_id2
+    ON building (street_id) WHERE deleted_at IS NULL;
 
 -- ─── street.postcode — most common postcode among its buildings ───────────────
--- Nullable: populated where buildings have postcode data (DE, PL, etc.), NULL elsewhere.
-ALTER TABLE street ADD COLUMN postcode text;
-
 UPDATE street s
 SET postcode = (
     SELECT b.postcode
@@ -361,15 +531,19 @@ SET postcode = (
     GROUP BY b.postcode
     ORDER BY count(*) DESC
     LIMIT 1
-);
+)
+WHERE s.postcode IS NULL;
 
-CREATE INDEX idx_street_postcode ON street (postcode) WHERE postcode IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_street_postcode2
+    ON street (postcode) WHERE postcode IS NOT NULL AND deleted_at IS NULL;
 
--- ─── way_3857 no longer needed after building is constructed ──────────────────
--- Dropping it reduces the dump size (raw EPSG:3857 geometry per street row).
-ALTER TABLE street DROP COLUMN way_3857;
+-- ─── Drop temporary way_3857 column ──────────────────────────────────────────
+ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
 
--- ─── Final statistics for query planner in destination DB ────────────────────
+-- ─── Re-enable triggers ───────────────────────────────────────────────────────
+SET session_replication_role = DEFAULT;
+
+-- ─── Final statistics ────────────────────────────────────────────────────────
 ANALYZE country;
 ANALYZE state;
 ANALYZE city;
