@@ -1,0 +1,5 @@
+cache/
+results/
+*.pbf
+*.log
+nohup.out
