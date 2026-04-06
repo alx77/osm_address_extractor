@@ -24,7 +24,11 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 -- building.id = min OSM building ID in the cluster.
 -- External (non-OSM) data uses nextval('external_id_seq') starting at 5×10^15.
 
-CREATE TABLE IF NOT EXISTS data_source (
+-- UNLOGGED TABLE IF NOT EXISTS: on a fresh Docker container the tables don't exist
+-- yet, so they are created as UNLOGGED (no WAL → 2-5x faster bulk inserts, safe
+-- because we pg_dump the result anyway). On an existing production DB the
+-- IF NOT EXISTS is a no-op and the tables keep their current LOGGED state.
+CREATE UNLOGGED TABLE IF NOT EXISTS data_source (
     id   smallint PRIMARY KEY,
     name text NOT NULL UNIQUE
 );
@@ -32,7 +36,7 @@ INSERT INTO data_source (id, name) VALUES (1, 'osm') ON CONFLICT DO NOTHING;
 
 CREATE SEQUENCE IF NOT EXISTS external_id_seq START 5000000000000000;
 
-CREATE TABLE IF NOT EXISTS country (
+CREATE UNLOGGED TABLE IF NOT EXISTS country (
     osm_id     bigint PRIMARY KEY,
     name       text,
     tags       hstore,
@@ -44,7 +48,7 @@ CREATE TABLE IF NOT EXISTS country (
 );
 CREATE INDEX IF NOT EXISTS idx_country_way ON country USING gist (way);
 
-CREATE TABLE IF NOT EXISTS state (
+CREATE UNLOGGED TABLE IF NOT EXISTS state (
     osm_id         bigint PRIMARY KEY,
     name           text,
     country_osm_id bigint REFERENCES country(osm_id),
@@ -58,7 +62,7 @@ CREATE TABLE IF NOT EXISTS state (
 CREATE INDEX IF NOT EXISTS idx_state_way            ON state USING gist (way);
 CREATE INDEX IF NOT EXISTS idx_state_country_osm_id ON state (country_osm_id);
 
-CREATE TABLE IF NOT EXISTS city (
+CREATE UNLOGGED TABLE IF NOT EXISTS city (
     osm_id       bigint PRIMARY KEY,
     name         text,
     place        text,
@@ -77,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_city_way          ON city USING gist (way);
 CREATE INDEX IF NOT EXISTS idx_city_way_origin   ON city USING gist (way_origin);
 CREATE INDEX IF NOT EXISTS idx_city_state_osm_id ON city (state_osm_id);
 
-CREATE TABLE IF NOT EXISTS street (
+CREATE UNLOGGED TABLE IF NOT EXISTS street (
     id           bigint PRIMARY KEY,
     name         text NOT NULL,
     city_osm_id  bigint REFERENCES city(osm_id),
@@ -108,7 +112,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_street_source_ref
     ON street (source_id, source_ref)
     WHERE source_ref IS NOT NULL AND deleted_at IS NULL;
 
-CREATE TABLE IF NOT EXISTS building (
+CREATE UNLOGGED TABLE IF NOT EXISTS building (
     id           bigint PRIMARY KEY,
     street_id    bigint REFERENCES street(id),
     osm_ids      bigint[],
@@ -134,12 +138,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_building_source_ref
 -- 2. Switch tables to UNLOGGED — skips WAL writes, 2-5x faster on large datasets.
 --    Safe here: we pg_dump the result; on crash just re-run.
 SET session_replication_role = replica;
-
-ALTER TABLE country  SET UNLOGGED;
-ALTER TABLE state    SET UNLOGGED;
-ALTER TABLE city     SET UNLOGGED;
-ALTER TABLE street   SET UNLOGGED;
-ALTER TABLE building SET UNLOGGED;
 
 -- ─── Indexes on raw import tables ────────────────────────────────────────────
 DROP INDEX IF EXISTS import.idx_osm_associated_streets_tags;
