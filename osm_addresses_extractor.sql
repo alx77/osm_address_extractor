@@ -1,3 +1,11 @@
+-- osm_addresses_extractor.sql
+-- Runs INSIDE the Docker extractor container against a fresh 'gis' database.
+-- DO NOT run against a production gis DB:
+--   - ALTER TABLE SET UNLOGGED makes tables unsafe on crash
+--   - session_replication_role=replica disables all triggers
+-- The changelog trigger belongs in geocompleter-rs/postgres/create.sql
+-- and lives only in the production database.
+
 -- ─── Session tuning ──────────────────────────────────────────────────────────
 SET work_mem = '512MB';
 SET maintenance_work_mem = '1GB';
@@ -120,37 +128,6 @@ CREATE INDEX IF NOT EXISTS idx_building_way
 CREATE UNIQUE INDEX IF NOT EXISTS idx_building_source_ref
     ON building (source_id, source_ref)
     WHERE source_ref IS NOT NULL AND deleted_at IS NULL;
-
-CREATE TABLE IF NOT EXISTS geocompleter_changelog (
-    id          bigserial PRIMARY KEY,
-    street_id   bigint NOT NULL,
-    change_type text NOT NULL CHECK (change_type IN ('insert', 'update', 'delete')),
-    changed_at  timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_changelog_changed_at ON geocompleter_changelog (changed_at);
-
-CREATE OR REPLACE FUNCTION street_changelog_fn()
-RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    IF TG_OP = 'INSERT' THEN
-        INSERT INTO geocompleter_changelog (street_id, change_type) VALUES (NEW.id, 'insert');
-    ELSIF TG_OP = 'UPDATE' THEN
-        IF OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
-            INSERT INTO geocompleter_changelog (street_id, change_type) VALUES (NEW.id, 'delete');
-        ELSE
-            INSERT INTO geocompleter_changelog (street_id, change_type) VALUES (NEW.id, 'update');
-        END IF;
-    ELSIF TG_OP = 'DELETE' THEN
-        INSERT INTO geocompleter_changelog (street_id, change_type) VALUES (OLD.id, 'delete');
-    END IF;
-    RETURN NEW;
-END;
-$$;
-
-DROP TRIGGER IF EXISTS street_changelog ON street;
-CREATE TRIGGER street_changelog
-    AFTER INSERT OR UPDATE OR DELETE ON street
-    FOR EACH ROW EXECUTE FUNCTION street_changelog_fn();
 
 -- ─── Bulk load optimizations ──────────────────────────────────────────────────
 -- 1. Disable triggers (no changelog flood during bulk insert).
