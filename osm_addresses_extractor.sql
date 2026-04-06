@@ -1,6 +1,7 @@
 -- ─── Session tuning ──────────────────────────────────────────────────────────
 SET work_mem = '512MB';
 SET maintenance_work_mem = '1GB';
+SET max_parallel_workers_per_gather = 4;
 -- Uncomment when running under Podman rootless: parallel workers fail there due to
 -- kernel DSM limits in user namespace. On a proper Docker host leave this commented.
 -- SET max_parallel_workers_per_gather = 0;
@@ -11,9 +12,8 @@ CREATE EXTENSION IF NOT EXISTS hstore;
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 -- ─── Schema (CREATE IF NOT EXISTS — safe to run against existing production DB) ──
--- street.id  = osm_ids[1]: minimum OSM road-segment ID in the cluster.
--- building.id = osm_ids[1]: minimum OSM building ID in the cluster.
--- Both are globally unique across OSM and stable between dump refreshes.
+-- street.id   = min OSM road-segment ID in the cluster (globally unique, stable).
+-- building.id = min OSM building ID in the cluster.
 -- External (non-OSM) data uses nextval('external_id_seq') starting at 5×10^15.
 
 CREATE TABLE IF NOT EXISTS data_source (
@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS street (
     importance   float8,
     postcode     text,
     way          geometry(Geometry, 4326),
+    way_3857     geometry,
     lon          float8,
     lat          float8,
     source_id    smallint NOT NULL DEFAULT 1 REFERENCES data_source(id),
@@ -116,9 +117,6 @@ CREATE TABLE IF NOT EXISTS building (
 CREATE INDEX IF NOT EXISTS idx_building_street_id ON building (street_id);
 CREATE INDEX IF NOT EXISTS idx_building_way
     ON building USING gist (way) WHERE deleted_at IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_building_osm_id
-    ON building ((osm_ids[1]))
-    WHERE osm_ids IS NOT NULL AND deleted_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_building_source_ref
     ON building (source_id, source_ref)
     WHERE source_ref IS NOT NULL AND deleted_at IS NULL;
@@ -154,10 +152,17 @@ CREATE TRIGGER street_changelog
     AFTER INSERT OR UPDATE OR DELETE ON street
     FOR EACH ROW EXECUTE FUNCTION street_changelog_fn();
 
--- ─── Bulk load: disable triggers to avoid flooding changelog ─────────────────
--- session_replication_role=replica suppresses all triggers for this session.
--- Re-enabled at the end of the script.
+-- ─── Bulk load optimizations ──────────────────────────────────────────────────
+-- 1. Disable triggers (no changelog flood during bulk insert).
+-- 2. Switch tables to UNLOGGED — skips WAL writes, 2-5x faster on large datasets.
+--    Safe here: we pg_dump the result; on crash just re-run.
 SET session_replication_role = replica;
+
+ALTER TABLE country  SET UNLOGGED;
+ALTER TABLE state    SET UNLOGGED;
+ALTER TABLE city     SET UNLOGGED;
+ALTER TABLE street   SET UNLOGGED;
+ALTER TABLE building SET UNLOGGED;
 
 -- ─── Indexes on raw import tables ────────────────────────────────────────────
 DROP INDEX IF EXISTS import.idx_osm_associated_streets_tags;
@@ -311,9 +316,11 @@ CREATE INDEX idx_lines_idx_name_way
 ANALYZE lines;
 
 -- ─── street ──────────────────────────────────────────────────────────────────
--- id = osm_ids[1]: minimum OSM segment ID in the cluster — stable across dumps.
+-- id = min(osm_id) across the cluster — globally unique, stable across dumps.
+-- way_3857 populated directly from the cluster union (same CRS as osm_roads),
+-- eliminating the need for a separate correlated-subquery UPDATE afterward.
 INSERT INTO street (id, name, rel_osm_ids, osm_ids, city_osm_id,
-                    city_area, tags, way, lon, lat)
+                    city_area, tags, way, way_3857, lon, lat)
 WITH clusters AS materialized (
     SELECT
         ST_ClusterDBSCAN(way, eps := 1000, minpoints := 1) OVER (
@@ -327,16 +334,17 @@ WITH clusters AS materialized (
 )
 , street_groups AS materialized (
     SELECT
-        row_number() OVER () AS _row,   -- internal CTE join key only
+        row_number() OVER () AS _row,
         name,
         city_osm_id,
-        array_agg(osm_id ORDER BY osm_id) AS osm_ids,  -- sorted: [1]=min
-        ST_Union(way) AS way
+        min(osm_id)      AS min_osm_id,  -- stable PK: no sort needed
+        array_agg(osm_id) AS osm_ids,    -- order irrelevant; id tracked separately
+        ST_Union(way)    AS way          -- in EPSG:3857 (from osm_roads)
     FROM clusters
     GROUP BY name, city_osm_id, cluster_id
 )
 , street_unnested AS (
-    SELECT sg._row, sg.name, sg.city_osm_id, sg.osm_ids, sg.way,
+    SELECT sg._row, sg.name, sg.city_osm_id, sg.min_osm_id, sg.osm_ids, sg.way,
            unnest(sg.osm_ids) AS member_osm_id
     FROM street_groups sg
 )
@@ -345,6 +353,7 @@ WITH clusters AS materialized (
         su._row,
         su.name,
         su.city_osm_id,
+        su.min_osm_id,
         su.osm_ids,
         su.way,
         array_remove(array_agg(DISTINCT r.rel_osm_id), NULL) AS rel_osm_ids
@@ -353,22 +362,22 @@ WITH clusters AS materialized (
         ON r.member_osm_id = su.member_osm_id
        AND r.name = su.name
        AND r.role = 'street'
-    GROUP BY su._row, su.name, su.city_osm_id, su.osm_ids, su.way
+    GROUP BY su._row, su.name, su.city_osm_id, su.min_osm_id, su.osm_ids, su.way
 )
-SELECT DISTINCT ON (sr.osm_ids[1])
-    sr.osm_ids[1]      AS id,      -- stable OSM-based PK
+SELECT DISTINCT ON (sr.min_osm_id)
+    sr.min_osm_id                                           AS id,
     sr.name,
     sr.rel_osm_ids,
     sr.osm_ids,
     sr.city_osm_id,
-    ST_Area(cit.way)   AS city_area,
+    ST_Area(cit.way)                                        AS city_area,
     r.tags,
-    -- way_3857 as way temporarily; transformed to 4326 below after importance update
-    ST_Transform(sr.way, 4326) AS way,
-    ST_X(ST_Transform(ST_PointOnSurface(sr.way), 4326)) AS lon,
-    ST_Y(ST_Transform(ST_PointOnSurface(sr.way), 4326)) AS lat
+    ST_Transform(sr.way, 4326)                              AS way,
+    sr.way                                                  AS way_3857,
+    ST_X(ST_Transform(ST_PointOnSurface(sr.way), 4326))     AS lon,
+    ST_Y(ST_Transform(ST_PointOnSurface(sr.way), 4326))     AS lat
 FROM street_rels sr
-JOIN import.osm_roads r   ON r.osm_id = sr.osm_ids[1]
+JOIN import.osm_roads r   ON r.osm_id = sr.min_osm_id
 JOIN city cit             ON cit.osm_id = sr.city_osm_id
 ON CONFLICT (id) DO UPDATE SET
     name        = EXCLUDED.name,
@@ -378,28 +387,18 @@ ON CONFLICT (id) DO UPDATE SET
     city_area   = EXCLUDED.city_area,
     tags        = EXCLUDED.tags,
     way         = EXCLUDED.way,
+    way_3857    = EXCLUDED.way_3857,
     lon         = EXCLUDED.lon,
     lat         = EXCLUDED.lat,
     updated_at  = now(),
     deleted_at  = NULL;
 
-DROP INDEX IF EXISTS idx_street_id;
-CREATE UNIQUE INDEX idx_street_id ON street (id) WHERE deleted_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_street_name2        ON street (name)               WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_street_tags2        ON street USING GIN (tags);
-CREATE INDEX IF NOT EXISTS idx_street_rel_osm_ids2 ON street USING GIN (rel_osm_ids);
-
--- way_3857 kept temporarily for building ST_DWithin joins (same CRS as osm_buildings)
-ALTER TABLE street ADD COLUMN IF NOT EXISTS way_3857 geometry;
-UPDATE street s
-SET way_3857 = (
-    SELECT ST_Union(r.way)
-    FROM import.osm_roads r
-    WHERE r.osm_id = ANY(s.osm_ids)
-);
-CREATE INDEX idx_street_way_3857 ON street USING gist (way_3857) WHERE way_3857 IS NOT NULL;
-CREATE INDEX idx_street_city_osm_id2 ON street (city_osm_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_street_id ON street (id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_street_name2         ON street (name)             WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_street_tags2         ON street USING GIN (tags);
+CREATE INDEX IF NOT EXISTS idx_street_rel_osm_ids2  ON street USING GIN (rel_osm_ids);
+CREATE INDEX IF NOT EXISTS idx_street_way_3857      ON street USING gist (way_3857) WHERE way_3857 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_street_city_osm_id2  ON street (city_osm_id)      WHERE deleted_at IS NULL;
 
 -- ─── importance ───────────────────────────────────────────────────────────────
 UPDATE street s
@@ -425,7 +424,7 @@ CREATE INDEX IF NOT EXISTS idx_street_importance2
 ANALYZE street;
 
 -- ─── building ────────────────────────────────────────────────────────────────
--- id = osm_ids[1]: minimum OSM building ID in the cluster.
+-- id = min(osm_id) across the cluster — globally unique, stable across dumps.
 INSERT INTO building (id, osm_ids, way, street_id, housenumber, postcode, lon, lat)
 WITH buildings_raw AS (
     -- branch 1: building polygon has no housenumber, but a housenumber node is inside it
@@ -484,7 +483,8 @@ WITH buildings_raw AS (
 )
 , buildings_joined AS (
     SELECT
-        array_agg(DISTINCT osm_id ORDER BY osm_id) AS osm_ids,  -- sorted: [1]=min
+        min(osm_id)       AS min_osm_id,  -- stable PK
+        array_agg(osm_id) AS osm_ids,     -- order irrelevant; id tracked separately
         housenumber,
         postcode,
         ST_Union(way) AS way,
@@ -493,14 +493,14 @@ WITH buildings_raw AS (
     GROUP BY cluster_id, housenumber, street_id, postcode
 )
 SELECT
-    b.osm_ids[1]      AS id,        -- stable OSM-based PK
+    b.min_osm_id                                          AS id,
     b.osm_ids,
-    ST_Transform(b.way, 4326) AS way,
+    ST_Transform(b.way, 4326)                             AS way,
     b.street_id,
-    ltrim(btrim(b.housenumber, '" '''), '#№') AS housenumber,
+    ltrim(btrim(b.housenumber, '" '''), '#№')             AS housenumber,
     b.postcode,
-    ST_X(ST_Transform(ST_PointOnSurface(b.way), 4326)) AS lon,
-    ST_Y(ST_Transform(ST_PointOnSurface(b.way), 4326)) AS lat
+    ST_X(ST_Transform(ST_PointOnSurface(b.way), 4326))    AS lon,
+    ST_Y(ST_Transform(ST_PointOnSurface(b.way), 4326))    AS lat
 FROM buildings_joined b
 WHERE left(ltrim(btrim(b.housenumber, '" '''), '#№'), 1) IN
       ('0','1','2','3','4','5','6','7','8','9')
@@ -540,7 +540,13 @@ CREATE INDEX IF NOT EXISTS idx_street_postcode2
 -- ─── Drop temporary way_3857 column ──────────────────────────────────────────
 ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
 
--- ─── Re-enable triggers ───────────────────────────────────────────────────────
+-- ─── Restore logged mode and re-enable triggers ───────────────────────────────
+ALTER TABLE building SET LOGGED;
+ALTER TABLE street   SET LOGGED;
+ALTER TABLE city     SET LOGGED;
+ALTER TABLE state    SET LOGGED;
+ALTER TABLE country  SET LOGGED;
+
 SET session_replication_role = DEFAULT;
 
 -- ─── Final statistics ────────────────────────────────────────────────────────
