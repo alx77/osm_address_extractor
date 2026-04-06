@@ -98,7 +98,19 @@ for CC in "${COUNTRIES[@]}"; do
         --shm-size=2g \
         -v "$SCRIPT_DIR/results":/results \
         -v "$SCRIPT_DIR/cache":/cache \
-        -d postgres-extractor
+        -d postgres-extractor \
+        postgres \
+            -c shared_buffers=4GB \
+            -c effective_cache_size=8GB \
+            -c work_mem=512MB \
+            -c maintenance_work_mem=2GB \
+            -c max_parallel_workers_per_gather=4 \
+            -c max_parallel_workers=8 \
+            -c max_worker_processes=8 \
+            -c checkpoint_completion_target=0.9 \
+            -c wal_level=minimal \
+            -c max_wal_senders=0 \
+            -c synchronous_commit=off
 
     # Wait for postgres inside container
     echo "Waiting for postgres..."
