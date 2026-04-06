@@ -322,11 +322,18 @@ SET importance = LEAST(1.0,
 
 -- Step 2: override with Wikidata/Wikipedia pagerank where available
 -- (wikimedia-importance.sql.gz loaded by extract.sh into wikipedia_article table)
-UPDATE city c
-SET importance = COALESCE(w.importance, c.importance)
-FROM wikipedia_article w
-WHERE c.tags->'wikidata' = w.wikidata_id
-  AND w.importance IS NOT NULL;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'wikipedia_article') THEN
+        UPDATE city c
+        SET importance = COALESCE(w.importance, c.importance)
+        FROM wikipedia_article w
+        WHERE c.tags->'wikidata' = w.wikidata_id
+          AND w.importance IS NOT NULL;
+    ELSE
+        RAISE NOTICE 'wikipedia_article table not found, skipping Wikidata importance override';
+    END IF;
+END $$;
 
 -- Step 3: propagate city importance to streets
 UPDATE street s

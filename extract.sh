@@ -36,17 +36,21 @@ psql -U postgres -d gis -c "CREATE EXTENSION IF NOT EXISTS postgis; CREATE EXTEN
 
 WIKI_CACHE="/cache/wikimedia-importance.sql.gz"
 WIKI_MAX_DAYS=30
-if [ -f "$WIKI_CACHE" ]; then
+WIKI_NEED_DOWNLOAD=1
+if [ -f "$WIKI_CACHE" ] && gunzip -t "$WIKI_CACHE" 2>/dev/null; then
     WIKI_AGE_DAYS=$(( ( $(date +%s) - $(stat -c %Y "$WIKI_CACHE") ) / 86400 ))
     if [ "$WIKI_AGE_DAYS" -lt "$WIKI_MAX_DAYS" ]; then
         echo "using cached wikimedia-importance.sql.gz (${WIKI_AGE_DAYS}d old)"
+        WIKI_NEED_DOWNLOAD=0
     else
         echo "wikimedia-importance cache is ${WIKI_AGE_DAYS}d old, re-downloading..."
-        wget -q "https://nominatim.org/data/wikimedia-importance.sql.gz" -O "$WIKI_CACHE"
     fi
 else
-    echo "downloading wikimedia-importance.sql.gz..."
+    [ -f "$WIKI_CACHE" ] && echo "cached wikimedia-importance.sql.gz is corrupted, re-downloading..."
+fi
+if [ "$WIKI_NEED_DOWNLOAD" = "1" ]; then
     wget -q "https://nominatim.org/data/wikimedia-importance.sql.gz" -O "$WIKI_CACHE"
+    gunzip -t "$WIKI_CACHE" || { echo "ERROR: wikimedia-importance.sql.gz download failed/corrupted"; rm -f "$WIKI_CACHE"; exit 1; }
 fi
 echo "loading wikimedia-importance into gis..."
 gunzip -c "$WIKI_CACHE" | psql -U postgres -d gis -q
