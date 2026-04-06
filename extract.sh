@@ -34,11 +34,25 @@ psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='gis'" | grep -q 1
 echo "installing extensions..."
 psql -U postgres -d gis -c "CREATE EXTENSION IF NOT EXISTS postgis; CREATE EXTENSION IF NOT EXISTS hstore; CREATE EXTENSION IF NOT EXISTS pg_show_plans;"
 
+FILTERED="${FILENAME%.osm.pbf}-filtered.osm.pbf"
+echo "filtering PBF with osmium (roads, buildings, admin, addresses)..."
+time osmium tags-filter "$FILENAME" \
+    r/type=associatedStreet \
+    r/type=street \
+    wa/building \
+    nw/place \
+    wa/boundary=administrative \
+    w/highway \
+    w/railway=rail,tram,light_rail,subway,narrow_gauge,preserved,funicular,monorail,disused \
+    w/man_made=pier,groyne \
+    n/addr:housenumber \
+    -o "$FILTERED" --overwrite
+
 echo "importing $1 into gis..."
 time /imposm3/imposm import \
     -connection postgis://gis:secret@localhost/gis \
     -mapping imposm3/mapping.yaml \
-    -read "$FILENAME" -write -overwritecache
+    -read "$FILTERED" -write -overwritecache
 
 echo "extracting addresses for $2..."
 time psql -U postgres -d gis -f ./osm_addresses_extractor.sql

@@ -10,6 +10,7 @@ RUN set -x \
  procps \
  postgresql-18-postgis-3 \
  postgresql-18-postgis-3-scripts \
+ osmium-tool \
  postgresql-18-show-plans \
 && rm -rf /var/lib/apt/lists/*
 
