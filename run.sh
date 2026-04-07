@@ -69,6 +69,14 @@ else
     clear
 fi
 
+# Download imposm3 binary if not present (cached in project root, never re-downloaded)
+IMPOSM_ARCHIVE="$SCRIPT_DIR/imposm-0.14.2-linux-x86-64.tar.gz"
+IMPOSM_URL="https://github.com/omniscale/imposm3/releases/download/v0.14.2/imposm-0.14.2-linux-x86-64.tar.gz"
+if [ ! -f "$IMPOSM_ARCHIVE" ]; then
+    echo "Downloading imposm3 v0.14.2..."
+    wget -q --show-progress -O "$IMPOSM_ARCHIVE" "$IMPOSM_URL"
+fi
+
 # Build image once
 echo "Building postgres-extractor image (--no-cache)..."
 docker build --no-cache -t postgres-extractor "$SCRIPT_DIR"

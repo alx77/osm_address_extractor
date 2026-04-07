@@ -454,10 +454,3 @@ ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
 DROP TABLE data_source;
 
 SET session_replication_role = DEFAULT;
-
--- ─── Final statistics ────────────────────────────────────────────────────────
-ANALYZE country;
-ANALYZE state;
-ANALYZE city;
-ANALYZE street;
-ANALYZE building;

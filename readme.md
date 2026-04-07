@@ -1,61 +1,95 @@
 # osm_address_extractor
 
-PostGIS + imposm3 + Docker pipeline that extracts addresses from OpenStreetMap PBF files into a relational schema:
+Docker pipeline that extracts addresses from OpenStreetMap PBF files into a relational schema:
 
 ```
 country → state → city → street → building
 ```
 
-Each street gets an `importance` score (logarithmic population scale, 0–1) and the most common `postcode` from its buildings.
+Each street gets an `importance` score (logarithmic population scale, 0–1) derived from city
+population and Wikidata importance data. Buildings are linked to streets with housenumber and
+postcode.
 
 ## Requirements
 
-- Docker (or Podman — see notes below)
-- `dialog` package for the country selection menu
-- `imposm-0.14.2-linux-x86-64.tar.gz` placed in the project root before the first build
-  (download from https://github.com/omniscale/imposm3/releases/tag/v0.14.2)
+- Docker (or Podman)
+- `wget`, `dialog` (for interactive country menu)
 
-## Usage
+`imposm3` is downloaded automatically on first run.
+
+## Quick start
 
 ```bash
-./run.sh          # shows country selection menu, builds image if needed, runs extraction
+# Interactive menu — pick a country and run extraction
+./run.sh
+
+# Extract one country directly
+./run.sh UA
+
+# Extract multiple countries in sequence
+./run.sh UA DE PL
 ```
 
-Results are written to `./results/osm_addresses_<CC>/` as a **pg_dump directory format** archive (4 parallel jobs). Downloaded PBF files are cached in `./cache/` for 3 days.
+Results are written to `./results/osm_addresses_<CC>/` as a **pg_dump directory format** archive.
+Downloaded PBF files are cached in `./cache/` for 3 days and reused on subsequent runs.
 
-## Setting up the destination database
+## Restoring to the production database
 
-Run once before restoring:
+Initialize the schema once (only needed on a fresh database):
 
 ```bash
 ./init-gis-db.sh [host] [port] [user]
 # defaults: host=storage.service, port=5432, user=postgres
 ```
 
-Then restore:
+Restore a country:
 
 ```bash
-pg_restore -Fd -j 4 -h <host> -p <port> -U <user> -d gis \
-    --no-owner --no-privileges results/osm_addresses_<CC>
+./restore.sh UA
+./restore.sh DE storage.service 5432 postgres
 ```
 
-Multiple countries can be restored into the same `gis` database — each extraction produces independent rows.
+Multiple countries can be restored independently — OSM IDs are globally unique, so there are no
+conflicts between countries. `data_source` is excluded from the dump and already seeded by
+`init-gis-db.sh`.
+
+## Typical workflow
+
+```bash
+# New country — extract and restore
+./run.sh PL
+./restore.sh PL storage.service 5432 postgres
+
+# Re-extract an existing country (overwrites previous dump, then restore again)
+./run.sh UA
+./restore.sh UA storage.service 5432 postgres
+```
+
+Row counts are printed by `restore.sh` automatically after each restore.
 
 ## Podman rootless note
 
-Podman rootless ignores `--shm-size`, which prevents PostgreSQL from using parallel workers during extraction. To work around this, uncomment `SET max_parallel_workers_per_gather = 0;` at the top of `osm_addresses_extractor.sql` before building the image.
+Podman rootless ignores `--shm-size`, which prevents PostgreSQL from using parallel workers.
+To work around this, uncomment `SET max_parallel_workers_per_gather = 0;` at the top of
+`osm_addresses_extractor.sql` before building the image.
 
-On a proper Docker host the default settings work fine and parallel workers are used automatically.
+On a proper Docker host the default settings work fine.
 
 ## Output schema
 
-| Table    | Key columns |
-|----------|-------------|
-| country  | osm_id, name, way, lon, lat |
-| state    | osm_id, name, country_osm_id, way, lon, lat |
-| city     | osm_id, name, place, postal_code, state_osm_id, way, lon, lat |
-| street   | id, name, city_osm_id, importance, postcode, way, lon, lat |
-| building | id, osm_ids, street_id, housenumber, postcode, way, lon, lat |
+| Table    | Key columns                                                        |
+|----------|--------------------------------------------------------------------|
+| country  | osm_id, name, tags, way, lon, lat                                  |
+| state    | osm_id, name, country_osm_id, tags, way, lon, lat                  |
+| city     | osm_id, name, place, state_osm_id, importance, tags, way, lon, lat |
+| street   | id, name, city_osm_id, importance, postcodes, tags, way, lon, lat  |
+| building | id, street_id, osm_ids, housenumber, postcode, way, lon, lat       |
+
+## Supported countries
+
+Europe: AL AD AT BY BE BG HR CZ DK FI FR GE DE GB GR HU IT LV LT LU MD MC ME NL NO PL PT RO RU RS SK SI ES SE CH TR UA
+
+Middle East: IL
 
 ## License
 
