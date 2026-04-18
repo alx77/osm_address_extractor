@@ -8,7 +8,7 @@
 #
 # Example (from storage server directly):
 #   ./restore.sh UA
-#   ./restore.sh DE storage.service 5432 postgres
+#   PGPASSWORD=secret ./restore.sh DE localhost 5432 postgres
 
 set -e
 
@@ -17,6 +17,7 @@ CC="${CC^^}"
 HOST="${2:-localhost}"
 PORT="${3:-5432}"
 USER="${4:-postgres}"
+export PGPASSWORD="${PGPASSWORD:-secret}"
 DUMP_DIR="$(dirname "$0")/results/osm_addresses_${CC}"
 
 if [ ! -d "$DUMP_DIR" ]; then
@@ -28,7 +29,7 @@ echo "=== Restoring $CC into gis@$HOST:$PORT ==="
 
 pg_restore --data-only --disable-triggers \
     -h "$HOST" -p "$PORT" -U "$USER" -d gis \
-    -j 1 "$DUMP_DIR"
+    -j 4 "$DUMP_DIR"
 
 echo "Row counts:"
 psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
