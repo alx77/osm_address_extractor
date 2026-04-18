@@ -73,7 +73,8 @@ CREATE UNLOGGED TABLE IF NOT EXISTS city (
 );
 
 CREATE UNLOGGED TABLE IF NOT EXISTS street (
-    id           bigint,
+    id           integer,          -- compact surrogate PK (GeoHash order, assigned at end)
+    osm_id       bigint,           -- min(osm_id) of the cluster; NULL for non-OSM sources
     name         text NOT NULL,
     city_osm_id  bigint,
     rel_osm_ids  bigint[],
@@ -93,8 +94,9 @@ CREATE UNLOGGED TABLE IF NOT EXISTS street (
 );
 
 CREATE UNLOGGED TABLE IF NOT EXISTS building (
-    id           bigint,
-    street_id    bigint,
+    id           integer,          -- compact surrogate PK (GeoHash order, assigned at end)
+    osm_id       bigint,           -- min(osm_id) of the cluster; NULL for non-OSM sources
+    street_id    integer,          -- FK → street.id (compact)
     osm_ids      bigint[],
     housenumber  text,
     postcode     text,
@@ -244,7 +246,7 @@ ANALYZE lines;
 -- id = min(osm_id) across the cluster — globally unique, stable across dumps.
 -- way_3857 populated directly from the cluster union (EPSG:3857 from osm_roads),
 -- used for building spatial joins; dropped at the end.
-INSERT INTO street (id, name, rel_osm_ids, osm_ids, city_osm_id,
+INSERT INTO street (osm_id, name, rel_osm_ids, osm_ids, city_osm_id,
                     city_area, tags, way, way_3857, lon, lat)
 WITH clusters AS materialized (
     SELECT
@@ -281,7 +283,7 @@ WITH clusters AS materialized (
     GROUP BY su._row, su.name, su.city_osm_id, su.min_osm_id, su.osm_ids, su.way
 )
 SELECT DISTINCT ON (sr.min_osm_id)
-    sr.min_osm_id                                        AS id,
+    sr.min_osm_id                                        AS osm_id,
     sr.name,
     sr.rel_osm_ids,
     sr.osm_ids,
@@ -352,7 +354,9 @@ DROP TABLE IF EXISTS wikipedia_redirect;
 -- it causes O(nodes×polygons) spatial join — extremely slow for UA/DE scale.
 -- Branch 2 (addr:street on building itself) covers 95%+ of OSM data.
 -- Branch 3 (associatedStreet relation) kept — cheap index lookup.
-INSERT INTO building (id, osm_ids, way, street_id, housenumber, postcode, lon, lat)
+-- building.street_id temporarily stores street.osm_id for the join;
+-- it is remapped to street.id (compact) at the end of the script.
+INSERT INTO building (osm_id, osm_ids, way, street_id, housenumber, postcode, lon, lat)
 WITH buildings_raw AS (
     -- branch 2: building has addr:housenumber + addr:street tags (main branch)
     SELECT
@@ -360,7 +364,7 @@ WITH buildings_raw AS (
         b.housenumber,
         b."addr:postcode" AS postcode,
         b.way,
-        str.id AS street_id
+        str.osm_id AS street_id
     FROM import.osm_buildings b
     JOIN street str
         ON str.name = b."addr:street" AND ST_DWithin(b.way, str.way_3857, 400)
@@ -372,7 +376,7 @@ WITH buildings_raw AS (
         b.housenumber,
         COALESCE(b."addr:postcode", rel."addr:postcode"),
         b.way,
-        str.id
+        str.osm_id
     FROM import.osm_associated_streets rel
     JOIN import.osm_buildings b ON b.osm_id = rel.member_osm_id
     JOIN street str ON str.rel_osm_ids @> ARRAY[rel.rel_osm_id]
@@ -403,7 +407,7 @@ WITH buildings_raw AS (
     GROUP BY cluster_id, housenumber, street_id, postcode
 )
 SELECT
-    b.min_osm_id                                        AS id,
+    b.min_osm_id                                        AS osm_id,
     b.osm_ids,
     ST_Transform(b.way, 4326)                           AS way,
     b.street_id,
@@ -432,7 +436,7 @@ FROM (
     ) pc
     GROUP BY street_id
 ) sub
-WHERE sub.street_id = s.id;
+WHERE sub.street_id = s.osm_id;
 
 -- ─── street.postcodes — fill from street's own addr:postcode tag if missing ───
 -- Streets with no buildings (or buildings without postcode) still get a postcode
@@ -443,10 +447,60 @@ WHERE s.tags->'addr:postcode' IS NOT NULL
   AND s.tags->'addr:postcode' <> ''
   AND NOT (COALESCE(s.postcodes, '{}') @> ARRAY[s.tags->'addr:postcode']);
 
--- ─── Drop before dump ────────────────────────────────────────────────────────
+-- ─── Drop before compact ID assignment ───────────────────────────────────────
 -- way_3857: temp column used only for the building spatial join.
 ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
 
+-- ─── Assign compact surrogate IDs (GeoHash order) ────────────────────────────
+-- Streets and buildings are numbered independently within their own tables.
+-- IDs sorted by Z-curve (Morton) geohash so nearby objects get nearby IDs —
+-- this maximises RoaringBitmap container density (fewer containers, better AND/OR perf).
+-- Precision 7 ≈ 150 m cells; increase to 8 (≈ 40 m) for denser urban areas.
+
+UPDATE street s
+SET id = sub.rn
+FROM (
+    SELECT osm_id,
+           ROW_NUMBER() OVER (
+               ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)
+           )::integer AS rn
+    FROM street
+) sub
+WHERE s.osm_id = sub.osm_id;
+
+ALTER TABLE street ALTER COLUMN id SET NOT NULL;
+
+-- Remap building.street_id from osm_id space to compact id space.
+UPDATE building b
+SET street_id = s.id
+FROM street s
+WHERE s.osm_id = b.street_id;
+
+UPDATE building b
+SET id = sub.rn
+FROM (
+    SELECT osm_id,
+           ROW_NUMBER() OVER (
+               ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)
+           )::integer AS rn
+    FROM building
+) sub
+WHERE b.osm_id = sub.osm_id;
+
+ALTER TABLE building ALTER COLUMN id SET NOT NULL;
+
+-- ─── Primary keys and final indexes ──────────────────────────────────────────
+ALTER TABLE street   ADD CONSTRAINT pk_street   PRIMARY KEY (id);
+ALTER TABLE building ADD CONSTRAINT pk_building PRIMARY KEY (id);
+
+-- osm_id: nullable, partial index (non-OSM sources have NULL).
+CREATE INDEX idx_street_osm_id   ON street   (osm_id) WHERE osm_id IS NOT NULL;
+CREATE INDEX idx_building_osm_id ON building (osm_id) WHERE osm_id IS NOT NULL;
+
+-- building → street lookup (used by geocompleter to fetch buildings per street).
+CREATE INDEX idx_building_street_id ON building (street_id);
+
+-- ─── Drop before dump ────────────────────────────────────────────────────────
 -- data_source: seeded by create.sql in production (id=1 'osm' already exists).
 -- Including it in the dump causes duplicate key conflicts on pg_restore when
 -- other countries' data is already present — so we drop it here instead of
