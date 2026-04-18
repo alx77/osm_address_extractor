@@ -51,6 +51,24 @@ declare -A COUNTRY_URLS=(
     ["UA"]="europe/ukraine-latest.osm.pbf"
 )
 
+# Per-country ID offsets (50M slots, u32-safe up to country #85).
+# IDs within each slot: 1..50_000_000 (streets + buildings independently).
+declare -A COUNTRY_OFFSETS=(
+    ["DE"]=0          ["UA"]=50000000   ["PL"]=100000000
+    ["FR"]=150000000  ["GB"]=200000000  ["IT"]=250000000
+    ["ES"]=300000000  ["RU"]=350000000  ["TR"]=400000000
+    ["NL"]=450000000  ["BE"]=500000000  ["AT"]=550000000
+    ["CH"]=600000000  ["CZ"]=650000000  ["HU"]=700000000
+    ["RO"]=750000000  ["BY"]=800000000  ["SE"]=850000000
+    ["NO"]=900000000  ["FI"]=950000000  ["DK"]=1000000000
+    ["SK"]=1050000000 ["HR"]=1100000000 ["RS"]=1150000000
+    ["BG"]=1200000000 ["GR"]=1250000000 ["PT"]=1300000000
+    ["LT"]=1350000000 ["LV"]=1400000000 ["MD"]=1450000000
+    ["SI"]=1500000000 ["AL"]=1550000000 ["ME"]=1600000000
+    ["GE"]=1650000000 ["IL"]=1700000000 ["AD"]=1750000000
+    ["MC"]=1800000000 ["LU"]=1850000000
+)
+
 pick_country_interactive() {
     local OPTIONS=()
     for CC in "${!COUNTRY_URLS[@]}"; do
@@ -124,7 +142,8 @@ for CC in "${COUNTRIES[@]}"; do
     echo "Waiting for postgres..."
     until docker exec "$CONTAINER" pg_isready -U postgres -q; do sleep 1; done
 
-    docker exec "$CONTAINER" bash -c "/extract.sh $URL $CC" \
+    ID_OFFSET="${COUNTRY_OFFSETS[$CC]:-0}"
+    docker exec "$CONTAINER" bash -c "/extract.sh $URL $CC $ID_OFFSET" \
         2>&1 | tee "$SCRIPT_DIR/results/extract_${CC}.log"
 
     echo "=== $CC done, dump at results/osm_addresses_${CC} ==="

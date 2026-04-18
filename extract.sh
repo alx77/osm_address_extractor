@@ -1,5 +1,8 @@
 #!/bin/bash
-# Usage: /extract.sh <geofabrik_path> <COUNTRY_CODE>
+# Usage: /extract.sh <geofabrik_path> <COUNTRY_CODE> [ID_OFFSET]
+#   ID_OFFSET: integer base for compact street/building IDs (default 0).
+#              Each country gets a 50M slot to avoid collisions:
+#              DE=0, UA=50000000, PL=100000000, FR=150000000, ...
 # Runs inside the Docker container. Uses a single 'gis' database per container.
 # Produces /results/osm_addresses_<CC> (directory-format pg_dump).
 
@@ -76,8 +79,9 @@ time /imposm3/imposm import \
     -read "$FILTERED" -write -overwritecache
 rm -f "$FILTERED"
 
-echo "extracting addresses for $2..."
-time psql -U postgres -d gis -f ./osm_addresses_extractor.sql
+ID_OFFSET="${3:-0}"
+echo "extracting addresses for $2 (id_offset=$ID_OFFSET)..."
+time psql -U postgres -d gis -v id_offset="$ID_OFFSET" -f ./osm_addresses_extractor.sql
 
 echo "exporting results to /results/osm_addresses_$2..."
 rm -rf "/results/osm_addresses_$2"

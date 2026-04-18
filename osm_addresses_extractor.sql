@@ -456,9 +456,15 @@ ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
 -- IDs sorted by Z-curve (Morton) geohash so nearby objects get nearby IDs —
 -- this maximises RoaringBitmap container density (fewer containers, better AND/OR perf).
 -- Precision 7 ≈ 150 m cells; increase to 8 (≈ 40 m) for denser urban areas.
+--
+-- ID_OFFSET: per-country base so IDs are globally unique across countries.
+-- Each country gets a 50M slot → supports up to 85 countries within u32 range.
+-- Set via psql variable:  psql -v id_offset=50000000 ...
+-- Default (0) is correct for the first country loaded into a fresh DB.
+\set id_offset :id_offset
 
 UPDATE street s
-SET id = sub.rn
+SET id = sub.rn + :id_offset
 FROM (
     SELECT osm_id,
            ROW_NUMBER() OVER (
@@ -477,7 +483,7 @@ FROM street s
 WHERE s.osm_id = b.street_id;
 
 UPDATE building b
-SET id = sub.rn
+SET id = sub.rn + :id_offset
 FROM (
     SELECT osm_id,
            ROW_NUMBER() OVER (
