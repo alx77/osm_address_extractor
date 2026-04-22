@@ -235,7 +235,7 @@ WITH fragments AS materialized (
 )
 SELECT DISTINCT ON (osm_id) *
 FROM fragments
-ORDER BY osm_id, admin_level ASC, place_order;
+ORDER BY osm_id, place_order ASC, admin_level DESC;
 
 CREATE UNIQUE INDEX idx_lines_id ON lines (osm_id);
 ALTER TABLE lines ADD CONSTRAINT pk_lines PRIMARY KEY USING INDEX idx_lines_id;
