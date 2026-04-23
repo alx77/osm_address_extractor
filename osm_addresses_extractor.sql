@@ -13,6 +13,10 @@ SET max_parallel_workers_per_gather = 4;
 -- Uncomment when running under Podman rootless (kernel DSM limits in user ns):
 -- SET max_parallel_workers_per_gather = 0;
 
+-- ─── Input variables ─────────────────────────────────────────────────────────
+-- Passed via psql -v:  psql -v id_offset=50000000 -v country_code=UA ...
+\set country_code :country_code
+
 -- ─── Extensions ──────────────────────────────────────────────────────────────
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS hstore;
@@ -482,7 +486,6 @@ ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
 -- Set via psql variable:  psql -v id_offset=50000000 ...
 -- Default (0) is correct for the first country loaded into a fresh DB.
 \set id_offset :id_offset
-\set country_code :country_code
 
 UPDATE street s
 SET id = sub.rn + :id_offset
