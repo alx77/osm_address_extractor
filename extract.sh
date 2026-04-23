@@ -81,7 +81,7 @@ rm -f "$FILTERED"
 
 ID_OFFSET="${3:-0}"
 echo "extracting addresses for $2 (id_offset=$ID_OFFSET)..."
-time psql -U postgres -d gis -v id_offset="$ID_OFFSET" -f ./osm_addresses_extractor.sql
+time psql -U postgres -d gis -v id_offset="$ID_OFFSET" -v country_code="$2" -f ./osm_addresses_extractor.sql
 
 echo "exporting results to /results/osm_addresses_$2..."
 rm -rf "/results/osm_addresses_$2"

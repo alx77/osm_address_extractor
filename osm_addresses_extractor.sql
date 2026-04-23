@@ -39,6 +39,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS country (
     way        geometry(Geometry, 4326),
     lon        float8,
     lat        float8,
+    country_code text,
     updated_at timestamptz NOT NULL DEFAULT now(),
     deleted_at timestamptz
 );
@@ -51,6 +52,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS state (
     way            geometry(Geometry, 4326),
     lon            float8,
     lat            float8,
+    country_code   text,
     updated_at     timestamptz NOT NULL DEFAULT now(),
     deleted_at     timestamptz
 );
@@ -68,6 +70,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS city (
     way          geometry(Geometry, 4326),
     lon          float8,
     lat          float8,
+    country_code text,
     updated_at   timestamptz NOT NULL DEFAULT now(),
     deleted_at   timestamptz
 );
@@ -87,6 +90,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS street (
     way_3857     geometry,        -- temp column for building spatial join; dropped at end
     lon          float8,
     lat          float8,
+    country_code text,
     source_id    smallint NOT NULL DEFAULT 1,
     source_ref   text,
     updated_at   timestamptz NOT NULL DEFAULT now(),
@@ -103,6 +107,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS building (
     way          geometry(Geometry, 4326),
     lon          float8,
     lat          float8,
+    country_code text,
     source_id    smallint NOT NULL DEFAULT 1,
     source_ref   text,
     updated_at   timestamptz NOT NULL DEFAULT now(),
@@ -158,6 +163,9 @@ SELECT DISTINCT ON (osm_id)
 FROM import.osm_admin
 WHERE admin_level = 2;
 
+UPDATE country
+SET country_code = :'country_code';
+
 -- Final GiST index — used both for spatial join below and kept in the dump.
 CREATE INDEX idx_country_way_geo ON country USING gist (way);
 ANALYZE country;
@@ -175,6 +183,9 @@ SELECT DISTINCT ON (sta.osm_id)
 FROM import.osm_admin sta
 JOIN country ON ST_Contains(country.way, ST_Transform(sta.way, 4326))
 WHERE sta.place = 'state' OR sta.admin_level = 4;
+
+UPDATE state
+SET country_code = :'country_code';
 
 -- Final GiST index — used both for spatial join below and kept in the dump.
 CREATE INDEX idx_state_way_geo ON state USING gist (way);
@@ -199,6 +210,9 @@ FROM import.osm_admin cit
 JOIN state ON ST_Contains(state.way, ST_Transform(cit.way, 4326))
 WHERE cit.admin_level >= 6 OR cit.place IN ('city','hamlet','town','village')
    OR (cit.place = 'state' AND cit.name IN ('Berlin', 'Hamburg', 'Bremen'));
+
+UPDATE city
+SET country_code = :'country_code';
 
 -- Final GiST indexes — used both for spatial join below and kept in the dump.
 CREATE INDEX idx_city_way_geo    ON city USING gist (way);
@@ -297,6 +311,9 @@ SELECT DISTINCT ON (sr.min_osm_id)
 FROM street_rels sr
 JOIN import.osm_roads r ON r.osm_id = sr.min_osm_id
 JOIN city cit           ON cit.osm_id = sr.city_osm_id;
+
+UPDATE street
+SET country_code = :'country_code';
 
 -- idx_street_way_3857: temp, dropped automatically when way_3857 column is dropped after building join.
 -- The rest are final index names — built here once on bulk-loaded data (2-3x faster than per-row).
@@ -419,6 +436,9 @@ FROM buildings_joined b
 WHERE left(ltrim(btrim(b.housenumber, '" '''), '#№'), 1) IN
       ('0','1','2','3','4','5','6','7','8','9');
 
+UPDATE building
+SET country_code = :'country_code';
+
 ANALYZE building;
 
 -- ─── street.postcodes — all postcodes sorted by frequency (most common first) ──
@@ -462,6 +482,7 @@ ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
 -- Set via psql variable:  psql -v id_offset=50000000 ...
 -- Default (0) is correct for the first country loaded into a fresh DB.
 \set id_offset :id_offset
+\set country_code :country_code
 
 UPDATE street s
 SET id = sub.rn + :id_offset

@@ -4,39 +4,54 @@
 # so other countries' data is not affected.
 #
 # Usage:
-#   ./restore.sh <CC> [host] [port] [user]
+#   ./restore.sh <CC> [CC ...]
 #
 # Example (from storage server directly):
 #   ./restore.sh UA
-#   PGPASSWORD=secret ./restore.sh DE localhost 5432 postgres
+#   ./restore.sh UA DE PL
+#   HOST=localhost PORT=5432 USER=postgres PGPASSWORD=secret ./restore.sh DE
 
 set -e
 
-CC="${1:?Usage: ./restore.sh <CC> [host] [port] [user]}"
-CC="${CC^^}"
-HOST="${2:-localhost}"
-PORT="${3:-5432}"
-USER="${4:-postgres}"
-export PGPASSWORD="${PGPASSWORD:-secret}"
-DUMP_DIR="$(dirname "$0")/results/osm_addresses_${CC}"
-
-if [ ! -d "$DUMP_DIR" ]; then
-    echo "ERROR: dump not found: $DUMP_DIR"
+if [ $# -lt 1 ]; then
+    echo "Usage: ./restore.sh <CC> [CC ...]"
     exit 1
 fi
 
-echo "=== Restoring $CC into gis@$HOST:$PORT ==="
+HOST="${HOST:-localhost}"
+PORT="${PORT:-5432}"
+USER="${USER:-postgres}"
+export PGPASSWORD="${PGPASSWORD:-secret}"
 
-pg_restore --data-only --disable-triggers \
-    -h "$HOST" -p "$PORT" -U "$USER" -d gis \
-    -j 4 "$DUMP_DIR"
+for CC in "$@"; do
+    CC="${CC^^}"
+    DUMP_DIR="$(dirname "$0")/results/osm_addresses_${CC}"
 
-echo "Row counts:"
-psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
-    "SELECT 'country' AS tbl, COUNT(*) FROM country
-     UNION ALL SELECT 'state',    COUNT(*) FROM state
-     UNION ALL SELECT 'city',     COUNT(*) FROM city
-     UNION ALL SELECT 'street',   COUNT(*) FROM street
-     UNION ALL SELECT 'building', COUNT(*) FROM building;"
+    if [ ! -d "$DUMP_DIR" ]; then
+        echo "ERROR: dump not found: $DUMP_DIR"
+        exit 1
+    fi
 
-echo "=== $CC restore done ==="
+    echo "=== Restoring $CC into gis@$HOST:$PORT ==="
+    echo "Cleaning existing $CC rows..."
+    psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -v cc="$CC" -c \
+        "DELETE FROM building WHERE country_code = :'cc';
+         DELETE FROM street   WHERE country_code = :'cc';
+         DELETE FROM city     WHERE country_code = :'cc';
+         DELETE FROM state    WHERE country_code = :'cc';
+         DELETE FROM country  WHERE country_code = :'cc';"
+
+    pg_restore --data-only --disable-triggers \
+        -h "$HOST" -p "$PORT" -U "$USER" -d gis \
+        -j 4 "$DUMP_DIR"
+
+    echo "Row counts after $CC restore:"
+    psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+        "SELECT 'country' AS tbl, COUNT(*) FROM country
+         UNION ALL SELECT 'state',    COUNT(*) FROM state
+         UNION ALL SELECT 'city',     COUNT(*) FROM city
+         UNION ALL SELECT 'street',   COUNT(*) FROM street
+         UNION ALL SELECT 'building', COUNT(*) FROM building;"
+
+    echo "=== $CC restore done ==="
+done
