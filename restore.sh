@@ -47,7 +47,7 @@ for CC in "$@"; do
 
     pg_restore --disable-triggers \
         -h "$HOST" -p "$PORT" -U "$USER" -d gis \
-        -j 4 "$DUMP_DIR"
+        -j 4 "$DUMP_DIR" || true
 
     echo "Row counts after $CC restore:"
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
