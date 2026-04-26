@@ -45,7 +45,7 @@ for CC in "$@"; do
           END IF;
         END \$\$;"
 
-    pg_restore --disable-triggers \
+    pg_restore --data-only --disable-triggers \
         -h "$HOST" -p "$PORT" -U "$USER" -d gis \
         -j 4 "$DUMP_DIR"
 
