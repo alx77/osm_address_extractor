@@ -62,19 +62,36 @@ CREATE UNLOGGED TABLE IF NOT EXISTS state (
 );
 
 CREATE UNLOGGED TABLE IF NOT EXISTS city (
+    osm_id          bigint,
+    name            text,
+    place           text,
+    postal_code     text,
+    tags            hstore,
+    admin_level     integer,
+    state_osm_id    bigint,
+    district_osm_id bigint,
+    importance      float8,
+    way_origin      geometry(Geometry, 3857),
+    way             geometry(Geometry, 4326),
+    lon             float8,
+    lat             float8,
+    country_code    text,
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    deleted_at      timestamptz
+);
+
+CREATE UNLOGGED TABLE IF NOT EXISTS natural_feature (
     osm_id       bigint,
     name         text,
-    place        text,
-    postal_code  text,
     tags         hstore,
-    admin_level  integer,
-    state_osm_id bigint,
-    importance   float8,
-    way_origin   geometry(Geometry, 3857),
+    type         text,
     way          geometry(Geometry, 4326),
     lon          float8,
     lat          float8,
+    state_osm_id bigint,
+    city_osm_id  bigint,
     country_code text,
+    importance   float8,
     updated_at   timestamptz NOT NULL DEFAULT now(),
     deleted_at   timestamptz
 );
@@ -223,6 +240,17 @@ CREATE INDEX idx_city_way_geo    ON city USING gist (way);
 CREATE INDEX idx_city_way_origin ON city USING gist (way_origin);
 ANALYZE city;
 
+-- ─── district_osm_id: link sub-district cities to their rayon/Landkreis/powiat ─
+-- Only for cities at admin_level > 7 (or no explicit admin_level but place tag).
+-- Cities that ARE districts (admin_level <= 7) are skipped.
+UPDATE city c
+SET district_osm_id = d.osm_id
+FROM city d
+WHERE d.admin_level = 6
+  AND c.osm_id != d.osm_id
+  AND (c.admin_level > 7 OR (c.admin_level IS NULL AND c.place IN ('village','hamlet')))
+  AND ST_Contains(d.way, c.way);
+
 -- ─── lines (temp — only needed to build street, never exported) ───────────────
 DROP TABLE IF EXISTS lines;
 CREATE TEMP TABLE lines AS
@@ -364,6 +392,79 @@ UPDATE street s
 SET importance = c.importance
 FROM city c
 WHERE c.osm_id = s.city_osm_id;
+
+-- ─── natural_feature ─────────────────────────────────────────────────────────
+-- Merged from osm_natural_points, osm_natural_areas, osm_waterways.
+-- city_osm_id: set only when feature centroid is inside a city polygon (e.g. Труханів→Київ).
+-- state_osm_id: from spatial join with state (oblast).
+INSERT INTO natural_feature (osm_id, name, tags, type, way, lon, lat, state_osm_id, city_osm_id)
+WITH raw AS (
+    SELECT osm_id, name, tags, type,
+           ST_Transform(way, 4326) AS way,
+           ST_X(ST_Transform(ST_Centroid(way), 4326)) AS lon,
+           ST_Y(ST_Transform(ST_Centroid(way), 4326)) AS lat
+    FROM import.osm_natural_points
+    WHERE name IS NOT NULL AND name <> ''
+    UNION ALL
+    SELECT osm_id, name, tags, type,
+           ST_Transform(way, 4326),
+           ST_X(ST_Transform(ST_Centroid(way), 4326)),
+           ST_Y(ST_Transform(ST_Centroid(way), 4326))
+    FROM import.osm_natural_areas
+    WHERE name IS NOT NULL AND name <> ''
+    UNION ALL
+    SELECT osm_id, name, tags, type,
+           ST_Transform(way, 4326),
+           ST_X(ST_Transform(ST_Centroid(way), 4326)),
+           ST_Y(ST_Transform(ST_Centroid(way), 4326))
+    FROM import.osm_waterways
+    WHERE name IS NOT NULL AND name <> ''
+)
+SELECT DISTINCT ON (r.osm_id)
+    r.osm_id,
+    r.name,
+    r.tags,
+    r.type,
+    r.way,
+    r.lon,
+    r.lat,
+    s.osm_id  AS state_osm_id,
+    c.osm_id  AS city_osm_id
+FROM raw r
+LEFT JOIN state s   ON ST_Contains(s.way, ST_SetSRID(ST_MakePoint(r.lon, r.lat), 4326))
+LEFT JOIN city  c   ON ST_Contains(c.way, ST_SetSRID(ST_MakePoint(r.lon, r.lat), 4326))
+                   AND c.place IN ('city','town') AND c.importance >= 0.5;
+
+UPDATE natural_feature
+SET country_code = :'country_code';
+
+-- importance: type-based fallback
+UPDATE natural_feature
+SET importance = CASE type
+    WHEN 'river'   THEN 0.50
+    WHEN 'water'   THEN 0.40
+    WHEN 'island'  THEN 0.40
+    WHEN 'canal'   THEN 0.30
+    WHEN 'peak'    THEN 0.35
+    WHEN 'volcano' THEN 0.45
+    WHEN 'glacier' THEN 0.35
+    ELSE                0.20
+END;
+
+-- override with Wikipedia/Wikidata importance where available
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'wikipedia_article') THEN
+        UPDATE natural_feature nf
+        SET importance = COALESCE(w.importance, nf.importance)
+        FROM wikipedia_article w
+        WHERE nf.tags->'wikidata' = w.wd_page_title
+          AND w.importance IS NOT NULL;
+    END IF;
+END $$;
+
+CREATE INDEX idx_natural_feature_way ON natural_feature USING gist (way);
+ANALYZE natural_feature;
 
 -- Drop wikipedia tables — used only for importance, not included in the dump.
 DROP TABLE IF EXISTS wikipedia_article;

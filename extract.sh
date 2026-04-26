@@ -70,6 +70,8 @@ time osmium tags-filter "$FILENAME" \
     w/railway=rail,tram,light_rail,subway,narrow_gauge,preserved,funicular,monorail,disused \
     w/man_made=pier,groyne \
     n/addr:housenumber \
+    nwa/natural=peak,volcano,spring,cape,bay,water,island,wood,wetland,glacier \
+    wa/waterway=river,canal,stream,drain \
     -o "$FILTERED" --overwrite
 
 echo "importing $1 into gis..."

@@ -192,6 +192,89 @@ tables:
           - proposed
           - unclassified
           - unknown
+  osm_natural_points:
+    columns:
+    - type: id
+      name: osm_id
+      key:
+    - type: geometry
+      name: way
+      key:
+    - type: string
+      name: name
+      key: name
+    - type: mapping_value
+      name: type
+      key:
+    - type: hstore_tags
+      name: tags
+      key:
+    type: point
+    filters:
+      require:
+        name: [ __any__ ]
+    mapping:
+      natural:
+      - peak
+      - volcano
+      - spring
+      - cape
+      - bay
+  osm_natural_areas:
+    columns:
+    - type: id
+      name: osm_id
+      key:
+    - type: geometry
+      name: way
+      key:
+    - type: string
+      name: name
+      key: name
+    - type: mapping_value
+      name: type
+      key:
+    - type: hstore_tags
+      name: tags
+      key:
+    type: polygon
+    filters:
+      require:
+        name: [ __any__ ]
+    mapping:
+      natural:
+      - water
+      - island
+      - wood
+      - wetland
+      - glacier
+  osm_waterways:
+    columns:
+    - type: id
+      name: osm_id
+      key:
+    - type: geometry
+      name: way
+      key:
+    - type: string
+      name: name
+      key: name
+    - type: mapping_value
+      name: type
+      key:
+    - type: hstore_tags
+      name: tags
+      key:
+    type: linestring
+    filters:
+      require:
+        name: [ __any__ ]
+    mapping:
+      waterway:
+      - river
+      - canal
+      - stream
+      - drain
   housenumbers:
     columns:
     - type: id
