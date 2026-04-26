@@ -403,6 +403,8 @@ WITH raw AS (
            ST_Y(ST_Transform(ST_Centroid(way), 4326)) AS lat
     FROM import.osm_natural_points
     WHERE name IS NOT NULL AND name <> ''
+      AND type IN ('peak','volcano','glacier','cliff','cave_entrance','spring',
+                   'hot_spring','geyser','saddle','rock','stone','sinkhole')
     UNION ALL
     SELECT osm_id, name, tags, type,
            ST_Transform(way, 4326),
@@ -410,6 +412,8 @@ WITH raw AS (
            ST_Y(ST_Transform(ST_Centroid(way), 4326))
     FROM import.osm_natural_areas
     WHERE name IS NOT NULL AND name <> ''
+      AND type IN ('water','bay','strait','lake','reservoir','island','islet',
+                   'glacier','beach','wetland','peninsula','cape')
     UNION ALL
     SELECT osm_id, name, tags, type,
            ST_Transform(way, 4326),
@@ -417,6 +421,7 @@ WITH raw AS (
            ST_Y(ST_Transform(ST_Centroid(way), 4326))
     FROM import.osm_waterways
     WHERE name IS NOT NULL AND name <> ''
+      AND type IN ('river','canal','stream','drain')
 )
 SELECT DISTINCT ON (r.osm_id)
     r.osm_id,
