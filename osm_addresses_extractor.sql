@@ -247,7 +247,7 @@ FROM city d
 WHERE d.admin_level = 6
   AND c.osm_id != d.osm_id
   AND (c.admin_level > 7 OR (c.admin_level IS NULL AND c.place IN ('village','hamlet')))
-  AND ST_Contains(d.way, c.way);
+  AND ST_Contains(d.way, ST_SetSRID(ST_MakePoint(c.lon, c.lat), 4326));
 
 -- ─── lines (temp — only needed to build street, never exported) ───────────────
 DROP TABLE IF EXISTS lines;
