@@ -192,7 +192,7 @@ tables:
           - proposed
           - unclassified
           - unknown
-  osm_natural_points:
+  natural_points:
     columns:
     - type: id
       name: osm_id
@@ -217,10 +217,17 @@ tables:
       natural:
       - peak
       - volcano
+      - glacier
+      - cliff
+      - cave_entrance
       - spring
-      - cape
-      - bay
-  osm_natural_areas:
+      - hot_spring
+      - geyser
+      - saddle
+      - rock
+      - stone
+      - sinkhole
+  natural_areas:
     columns:
     - type: id
       name: osm_id
@@ -244,11 +251,16 @@ tables:
     mapping:
       natural:
       - water
+      - bay
+      - strait
       - island
-      - wood
-      - wetland
+      - islet
       - glacier
-  osm_waterways:
+      - beach
+      - wetland
+      - peninsula
+      - cape
+  waterways:
     columns:
     - type: id
       name: osm_id
