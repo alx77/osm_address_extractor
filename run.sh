@@ -147,4 +147,7 @@ for CC in "${COUNTRIES[@]}"; do
         2>&1 | tee "$SCRIPT_DIR/results/extract_${CC}.log"
 
     echo "=== $CC done, dump at results/osm_addresses_${CC} ==="
+
+    echo "Removing docker image (keeping volumes)..."
+    docker rmi postgres-extractor 2>/dev/null || true
 done
