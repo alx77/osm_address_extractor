@@ -47,6 +47,7 @@ for CC in "$@"; do
 
     pg_restore --data-only --disable-triggers \
         -h "$HOST" -p "$PORT" -U "$USER" -d gis \
+        --exclude-table=external_id_seq \
         -j 4 "$DUMP_DIR"
 
     echo "Row counts after $CC restore:"
