@@ -34,8 +34,6 @@ CREATE UNLOGGED TABLE IF NOT EXISTS data_source (
 );
 INSERT INTO data_source (id, name) VALUES (1, 'osm') ON CONFLICT DO NOTHING;
 
-CREATE SEQUENCE IF NOT EXISTS external_id_seq START 5000000000000000;
-
 CREATE UNLOGGED TABLE IF NOT EXISTS country (
     osm_id     bigint,
     name       text,
