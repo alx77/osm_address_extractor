@@ -32,16 +32,31 @@ for CC in "$@"; do
         exit 1
     fi
 
+    CC_LOWER="${CC,,}"
+
     echo "=== Restoring $CC into gis@$HOST:$PORT ==="
-    echo "Cleaning existing $CC rows..."
+    echo "Preparing partitions and cleaning existing $CC rows..."
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c "
         DO \$\$ BEGIN
-          IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'building') THEN
-            DELETE FROM building WHERE country_code = '$CC';
-            DELETE FROM street   WHERE country_code = '$CC';
-            DELETE FROM city     WHERE country_code = '$CC';
-            DELETE FROM state    WHERE country_code = '$CC';
-            DELETE FROM country  WHERE country_code = '$CC';
+          -- street partition: drop and recreate (instant, no table scan)
+          IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'street_${CC_LOWER}') THEN
+            EXECUTE 'ALTER TABLE street DETACH PARTITION street_${CC_LOWER}';
+            EXECUTE 'DROP TABLE street_${CC_LOWER}';
+          END IF;
+          EXECUTE 'CREATE TABLE street_${CC_LOWER} PARTITION OF street FOR VALUES IN (''$CC'')';
+
+          -- building partition: drop and recreate (instant)
+          IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'building_${CC_LOWER}') THEN
+            EXECUTE 'ALTER TABLE building DETACH PARTITION building_${CC_LOWER}';
+            EXECUTE 'DROP TABLE building_${CC_LOWER}';
+          END IF;
+          EXECUTE 'CREATE TABLE building_${CC_LOWER} PARTITION OF building FOR VALUES IN (''$CC'')';
+
+          -- non-partitioned tables: plain DELETE by country_code
+          IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'city') THEN
+            DELETE FROM city    WHERE country_code = '$CC';
+            DELETE FROM state   WHERE country_code = '$CC';
+            DELETE FROM country WHERE country_code = '$CC';
           END IF;
         END \$\$;"
 
