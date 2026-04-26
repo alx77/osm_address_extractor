@@ -94,3 +94,19 @@ Middle East: IL
 ## License
 
 GPL v3
+
+## Future considerations
+
+### Partitioning by country_code
+
+If the number of countries grows significantly, consider partitioning `building`, `street`, `city`,
+`state`, and `country` tables by `country_code`. This would make per-country `DELETE` (and
+re-import) instant (`TRUNCATE` on partition) and limit seq scans to a single partition.
+
+Requirements before migrating:
+- Tables must be recreated as `PARTITION BY LIST (country_code)` — no in-place `ALTER TABLE`.
+- All unique indexes must include `country_code` as a prefix column (Postgres requirement).
+- Primary keys must also include `country_code` (e.g. `(id, country_code)`), which breaks
+  foreign keys from child tables — those FK columns would need `country_code` added too.
+- At ~33% selectivity per country (3 countries) a plain index on `country_code` is useless;
+  becomes worthwhile around 20+ countries.
