@@ -34,12 +34,16 @@ for CC in "$@"; do
 
     echo "=== Restoring $CC into gis@$HOST:$PORT ==="
     echo "Cleaning existing $CC rows..."
-    psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
-        "DELETE FROM building WHERE country_code = '$CC';
-         DELETE FROM street   WHERE country_code = '$CC';
-         DELETE FROM city     WHERE country_code = '$CC';
-         DELETE FROM state    WHERE country_code = '$CC';
-         DELETE FROM country  WHERE country_code = '$CC';"
+    psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c "
+        DO \$\$ BEGIN
+          IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'building') THEN
+            DELETE FROM building WHERE country_code = '$CC';
+            DELETE FROM street   WHERE country_code = '$CC';
+            DELETE FROM city     WHERE country_code = '$CC';
+            DELETE FROM state    WHERE country_code = '$CC';
+            DELETE FROM country  WHERE country_code = '$CC';
+          END IF;
+        END \$\$;"
 
     pg_restore --data-only --disable-triggers \
         -h "$HOST" -p "$PORT" -U "$USER" -d gis \
