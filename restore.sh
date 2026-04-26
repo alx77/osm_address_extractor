@@ -60,10 +60,17 @@ for CC in "$@"; do
           END IF;
         END \$\$;"
 
+    # Build a filtered TOC list, excluding external_id_seq entries
+    # (sequence may be present in old dumps; the sequence does not exist on prod)
+    TOC_FILE="$(mktemp)"
+    pg_restore -l "$DUMP_DIR" | grep -v 'external_id_seq' > "$TOC_FILE"
+
     pg_restore --data-only --disable-triggers \
         -h "$HOST" -p "$PORT" -U "$USER" -d gis \
-        --exclude-table=external_id_seq \
+        --use-list="$TOC_FILE" \
         -j 4 "$DUMP_DIR"
+
+    rm -f "$TOC_FILE"
 
     echo "Row counts after $CC restore:"
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
