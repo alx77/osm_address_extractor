@@ -74,11 +74,12 @@ for CC in "$@"; do
 
     echo "Row counts after $CC restore:"
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
-        "SELECT 'country' AS tbl, COUNT(*) FROM country
-         UNION ALL SELECT 'state',    COUNT(*) FROM state
-         UNION ALL SELECT 'city',     COUNT(*) FROM city
-         UNION ALL SELECT 'street',   COUNT(*) FROM street
-         UNION ALL SELECT 'building', COUNT(*) FROM building;"
+        "SELECT 'country'         AS tbl, COUNT(*) FROM country
+         UNION ALL SELECT 'state',          COUNT(*) FROM state
+         UNION ALL SELECT 'city',           COUNT(*) FROM city
+         UNION ALL SELECT 'street',         COUNT(*) FROM street
+         UNION ALL SELECT 'building',       COUNT(*) FROM building
+         UNION ALL SELECT 'natural_feature',COUNT(*) FROM natural_feature;"
 
     echo "=== $CC restore done ==="
 done
