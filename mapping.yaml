@@ -285,8 +285,6 @@ tables:
       waterway:
       - river
       - canal
-      - stream
-      - drain
   housenumbers:
     columns:
     - type: id
