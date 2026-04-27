@@ -436,8 +436,7 @@ SELECT DISTINCT ON (r.osm_id)
 FROM raw r
 LEFT JOIN state s   ON ST_Contains(s.way, ST_SetSRID(ST_MakePoint(r.lon, r.lat), 4326))
 LEFT JOIN city  c   ON ST_Contains(c.way, ST_SetSRID(ST_MakePoint(r.lon, r.lat), 4326))
-                   AND c.place IN ('city','town') AND c.importance >= 0.5
-ON CONFLICT (osm_id) DO NOTHING;
+                   AND c.place IN ('city','town') AND c.importance >= 0.5;
 
 UPDATE natural_feature
 SET country_code = :'country_code';

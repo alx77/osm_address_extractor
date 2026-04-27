@@ -61,10 +61,10 @@ for CC in "$@"; do
           END IF;
         END \$\$;"
 
-    # Build a filtered TOC list, excluding external_id_seq entries
-    # (sequence may be present in old dumps; the sequence does not exist on prod)
+    # Build a filtered TOC list: exclude external_id_seq and natural_feature
+    # (natural_feature is restored separately via staging to handle border duplicates)
     TOC_FILE="$(mktemp)"
-    pg_restore -l "$DUMP_DIR" | grep -v 'external_id_seq' > "$TOC_FILE"
+    pg_restore -l "$DUMP_DIR" | grep -v 'external_id_seq' | grep -v 'TABLE DATA public natural_feature' > "$TOC_FILE"
 
     pg_restore --data-only --disable-triggers \
         -h "$HOST" -p "$PORT" -U "$USER" -d gis \
@@ -72,6 +72,24 @@ for CC in "$@"; do
         -j 4 "$DUMP_DIR"
 
     rm -f "$TOC_FILE"
+
+    # Restore natural_feature via staging: pg_restore uses COPY internally which
+    # doesn't support ON CONFLICT, so we dump to SQL, redirect COPY to a staging
+    # table (no PK), then INSERT ... ON CONFLICT DO NOTHING into the real table.
+    echo "Restoring natural_feature (ON CONFLICT DO NOTHING)..."
+    NF_SQL="$(mktemp --suffix=.sql)"
+    pg_restore --data-only --table=natural_feature -f "$NF_SQL" "$DUMP_DIR" 2>/dev/null || true
+    if [ -s "$NF_SQL" ]; then
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+            "DROP TABLE IF EXISTS natural_feature_stage;
+             CREATE UNLOGGED TABLE natural_feature_stage (LIKE natural_feature);"
+        sed 's/COPY public\.natural_feature /COPY public.natural_feature_stage /' "$NF_SQL" | \
+            psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+            "INSERT INTO natural_feature SELECT * FROM natural_feature_stage ON CONFLICT (osm_id) DO NOTHING;
+             DROP TABLE natural_feature_stage;"
+    fi
+    rm -f "$NF_SQL"
 
     echo "Row counts after $CC restore:"
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
