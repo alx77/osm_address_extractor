@@ -54,9 +54,10 @@ for CC in "$@"; do
 
           -- non-partitioned tables: plain DELETE by country_code
           IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'city') THEN
-            DELETE FROM city    WHERE country_code = '$CC';
-            DELETE FROM state   WHERE country_code = '$CC';
-            DELETE FROM country WHERE country_code = '$CC';
+            DELETE FROM natural_feature WHERE country_code = '$CC';
+            DELETE FROM city            WHERE country_code = '$CC';
+            DELETE FROM state           WHERE country_code = '$CC';
+            DELETE FROM country         WHERE country_code = '$CC';
           END IF;
         END \$\$;"
 
