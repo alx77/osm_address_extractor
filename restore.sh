@@ -38,19 +38,19 @@ for CC in "$@"; do
     echo "Preparing partitions and cleaning existing $CC rows..."
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c "
         DO \$\$ BEGIN
+          -- building partition must be dropped before street (FK dependency)
+          IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'building_${CC_LOWER}') THEN
+            EXECUTE 'ALTER TABLE building DETACH PARTITION building_${CC_LOWER}';
+            EXECUTE 'DROP TABLE building_${CC_LOWER}';
+          END IF;
+          EXECUTE 'CREATE TABLE building_${CC_LOWER} PARTITION OF building FOR VALUES IN (''$CC'')';
+
           -- street partition: drop and recreate (instant, no table scan)
           IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'street_${CC_LOWER}') THEN
             EXECUTE 'ALTER TABLE street DETACH PARTITION street_${CC_LOWER}';
             EXECUTE 'DROP TABLE street_${CC_LOWER}';
           END IF;
           EXECUTE 'CREATE TABLE street_${CC_LOWER} PARTITION OF street FOR VALUES IN (''$CC'')';
-
-          -- building partition: drop and recreate (instant)
-          IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'building_${CC_LOWER}') THEN
-            EXECUTE 'ALTER TABLE building DETACH PARTITION building_${CC_LOWER}';
-            EXECUTE 'DROP TABLE building_${CC_LOWER}';
-          END IF;
-          EXECUTE 'CREATE TABLE building_${CC_LOWER} PARTITION OF building FOR VALUES IN (''$CC'')';
 
           -- non-partitioned tables: plain DELETE by country_code
           IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'city') THEN
