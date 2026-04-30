@@ -34,20 +34,38 @@ CREATE UNLOGGED TABLE IF NOT EXISTS data_source (
 );
 INSERT INTO data_source (id, name) VALUES (1, 'osm') ON CONFLICT DO NOTHING;
 
+-- ─── Object registry — stable IDs across extractions ─────────────────────────
+-- object_registry is PERSISTENT: dumped with the data and restored into
+-- production so internal_id never changes between reloads.
+-- alias_osm maps osm_id → internal_id for fast bulk lookup during import.
+-- Other sources will get their own alias_* tables (alias_here, alias_custom, …).
+CREATE UNLOGGED TABLE IF NOT EXISTS object_registry (
+    internal_id BIGSERIAL PRIMARY KEY,
+    object_type TEXT        NOT NULL,  -- 'street', 'city', 'state', 'country', 'building', 'natural_feature'
+    deleted_at  TIMESTAMPTZ            -- soft delete; internal_id is never reused
+);
+
+CREATE UNLOGGED TABLE IF NOT EXISTS alias_osm (
+    osm_id      BIGINT NOT NULL PRIMARY KEY,
+    internal_id BIGINT NOT NULL REFERENCES object_registry
+);
+
 CREATE UNLOGGED TABLE IF NOT EXISTS country (
-    osm_id     bigint,
-    name       text,
-    tags       hstore,
-    way        geometry(Geometry, 4326),
-    lon        float8,
-    lat        float8,
+    osm_id      bigint,
+    internal_id bigint,
+    name        text,
+    tags        hstore,
+    way         geometry(Geometry, 4326),
+    lon         float8,
+    lat         float8,
     country_code text,
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    deleted_at timestamptz
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    deleted_at  timestamptz
 );
 
 CREATE UNLOGGED TABLE IF NOT EXISTS state (
     osm_id         bigint,
+    internal_id    bigint,
     name           text,
     country_osm_id bigint,
     tags           hstore,
@@ -61,6 +79,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS state (
 
 CREATE UNLOGGED TABLE IF NOT EXISTS city (
     osm_id          bigint,
+    internal_id     bigint,
     name            text,
     place           text,
     postal_code     text,
@@ -80,6 +99,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS city (
 
 CREATE UNLOGGED TABLE IF NOT EXISTS natural_feature (
     osm_id       bigint,
+    internal_id  bigint,
     name         text,
     tags         hstore,
     type         text,
@@ -96,6 +116,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS natural_feature (
 
 CREATE UNLOGGED TABLE IF NOT EXISTS street (
     id           integer,          -- compact surrogate PK (GeoHash order, assigned at end)
+    internal_id  bigint,           -- stable external ID from object_registry
     osm_id       bigint,           -- min(osm_id) of the cluster; NULL for non-OSM sources
     name         text NOT NULL,
     city_osm_id  bigint,
@@ -118,6 +139,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS street (
 
 CREATE UNLOGGED TABLE IF NOT EXISTS building (
     id           integer,          -- compact surrogate PK (GeoHash order, assigned at end)
+    internal_id  bigint,           -- stable external ID from object_registry
     osm_id       bigint,           -- min(osm_id) of the cluster; NULL for non-OSM sources
     street_id    integer,          -- FK → street.id (compact)
     osm_ids      bigint[],
@@ -623,6 +645,145 @@ WHERE b.osm_id = sub.osm_id;
 
 ALTER TABLE building ALTER COLUMN id SET NOT NULL;
 
+-- ─── Assign internal_ids from object_registry ────────────────────────────────
+-- New objects (not yet in alias_osm) get a new BIGSERIAL in GeoHash order
+-- so spatially nearby objects get nearby IDs → better RoaringBitmap density.
+-- Existing objects reuse their internal_id → stable across re-extractions.
+-- Objects with osm_id IS NULL (non-OSM sources) are skipped here;
+-- they will be handled by their own alias_* table.
+
+-- streets
+WITH new_streets AS (
+    SELECT s.osm_id, ROW_NUMBER() OVER (
+        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(s.lon, s.lat), 4326), 7)
+    ) AS rn
+    FROM street s
+    LEFT JOIN alias_osm a ON a.osm_id = s.osm_id
+    WHERE s.osm_id IS NOT NULL AND a.osm_id IS NULL
+),
+ins_reg AS (
+    INSERT INTO object_registry (object_type)
+    SELECT 'street' FROM new_streets ORDER BY rn
+    RETURNING internal_id
+),
+ins_rn AS (
+    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
+)
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT n.osm_id, r.internal_id FROM new_streets n JOIN ins_rn r ON n.rn = r.rn;
+
+UPDATE street s SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = s.osm_id;
+
+-- buildings
+WITH new_buildings AS (
+    SELECT b.osm_id, ROW_NUMBER() OVER (
+        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(b.lon, b.lat), 4326), 7)
+    ) AS rn
+    FROM building b
+    LEFT JOIN alias_osm a ON a.osm_id = b.osm_id
+    WHERE b.osm_id IS NOT NULL AND a.osm_id IS NULL
+),
+ins_reg AS (
+    INSERT INTO object_registry (object_type)
+    SELECT 'building' FROM new_buildings ORDER BY rn
+    RETURNING internal_id
+),
+ins_rn AS (
+    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
+)
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT n.osm_id, r.internal_id FROM new_buildings n JOIN ins_rn r ON n.rn = r.rn;
+
+UPDATE building b SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = b.osm_id;
+
+-- cities
+WITH new_cities AS (
+    SELECT c.osm_id, ROW_NUMBER() OVER (
+        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(c.lon, c.lat), 4326), 7)
+    ) AS rn
+    FROM city c
+    LEFT JOIN alias_osm a ON a.osm_id = c.osm_id
+    WHERE c.osm_id IS NOT NULL AND a.osm_id IS NULL
+),
+ins_reg AS (
+    INSERT INTO object_registry (object_type)
+    SELECT 'city' FROM new_cities ORDER BY rn
+    RETURNING internal_id
+),
+ins_rn AS (
+    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
+)
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT n.osm_id, r.internal_id FROM new_cities n JOIN ins_rn r ON n.rn = r.rn;
+
+UPDATE city c SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = c.osm_id;
+
+-- states
+WITH new_states AS (
+    SELECT s.osm_id, ROW_NUMBER() OVER (
+        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(s.lon, s.lat), 4326), 7)
+    ) AS rn
+    FROM state s
+    LEFT JOIN alias_osm a ON a.osm_id = s.osm_id
+    WHERE s.osm_id IS NOT NULL AND a.osm_id IS NULL
+),
+ins_reg AS (
+    INSERT INTO object_registry (object_type)
+    SELECT 'state' FROM new_states ORDER BY rn
+    RETURNING internal_id
+),
+ins_rn AS (
+    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
+)
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT n.osm_id, r.internal_id FROM new_states n JOIN ins_rn r ON n.rn = r.rn;
+
+UPDATE state s SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = s.osm_id;
+
+-- countries
+WITH new_countries AS (
+    SELECT c.osm_id, ROW_NUMBER() OVER (
+        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(c.lon, c.lat), 4326), 7)
+    ) AS rn
+    FROM country c
+    LEFT JOIN alias_osm a ON a.osm_id = c.osm_id
+    WHERE c.osm_id IS NOT NULL AND a.osm_id IS NULL
+),
+ins_reg AS (
+    INSERT INTO object_registry (object_type)
+    SELECT 'country' FROM new_countries ORDER BY rn
+    RETURNING internal_id
+),
+ins_rn AS (
+    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
+)
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT n.osm_id, r.internal_id FROM new_countries n JOIN ins_rn r ON n.rn = r.rn;
+
+UPDATE country c SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = c.osm_id;
+
+-- natural_features
+WITH new_features AS (
+    SELECT nf.osm_id, ROW_NUMBER() OVER (
+        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(nf.lon, nf.lat), 4326), 7)
+    ) AS rn
+    FROM natural_feature nf
+    LEFT JOIN alias_osm a ON a.osm_id = nf.osm_id
+    WHERE nf.osm_id IS NOT NULL AND a.osm_id IS NULL
+),
+ins_reg AS (
+    INSERT INTO object_registry (object_type)
+    SELECT 'natural_feature' FROM new_features ORDER BY rn
+    RETURNING internal_id
+),
+ins_rn AS (
+    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
+)
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT n.osm_id, r.internal_id FROM new_features n JOIN ins_rn r ON n.rn = r.rn;
+
+UPDATE natural_feature nf SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = nf.osm_id;
+
 -- ─── Primary keys and final indexes ──────────────────────────────────────────
 ALTER TABLE street   ADD CONSTRAINT pk_street   PRIMARY KEY (id);
 ALTER TABLE building ADD CONSTRAINT pk_building PRIMARY KEY (id);
@@ -630,6 +791,11 @@ ALTER TABLE building ADD CONSTRAINT pk_building PRIMARY KEY (id);
 -- osm_id: nullable, partial index (non-OSM sources have NULL).
 CREATE INDEX idx_street_osm_id   ON street   (osm_id) WHERE osm_id IS NOT NULL;
 CREATE INDEX idx_building_osm_id ON building (osm_id) WHERE osm_id IS NOT NULL;
+
+-- internal_id indexes — used by geocompleter and for deduplication across sources.
+CREATE INDEX idx_street_internal_id   ON street   (internal_id) WHERE internal_id IS NOT NULL;
+CREATE INDEX idx_building_internal_id ON building (internal_id) WHERE internal_id IS NOT NULL;
+CREATE INDEX idx_city_internal_id     ON city     (internal_id) WHERE internal_id IS NOT NULL;
 
 -- building → street lookup (used by geocompleter to fetch buildings per street).
 CREATE INDEX idx_building_street_id ON building (street_id);
@@ -639,6 +805,8 @@ CREATE INDEX idx_building_street_id ON building (street_id);
 -- Including it in the dump causes duplicate key conflicts on pg_restore when
 -- other countries' data is already present — so we drop it here instead of
 -- excluding it via pg_dump -T.
+-- object_registry and alias_osm are NOT dropped — they are included in the dump
+-- and restored into production to preserve stable internal_ids across extractions.
 DROP TABLE data_source;
 
 SET session_replication_role = DEFAULT;
