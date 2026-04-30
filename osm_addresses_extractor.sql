@@ -645,6 +645,11 @@ WHERE b.osm_id = sub.osm_id;
 
 ALTER TABLE building ALTER COLUMN id SET NOT NULL;
 
+-- ─── Align object_registry sequence to country offset ───────────────────────
+-- Same slot system as compact id: each country gets 50M IDs starting at id_offset.
+-- This ensures internal_ids are globally unique across countries in production.
+SELECT setval('object_registry_internal_id_seq', GREATEST(:id_offset, 1));
+
 -- ─── Assign internal_ids from object_registry ────────────────────────────────
 -- New objects (not yet in alias_osm) get a new BIGSERIAL in GeoHash order
 -- so spatially nearby objects get nearby IDs → better RoaringBitmap density.
