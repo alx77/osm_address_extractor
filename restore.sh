@@ -61,13 +61,14 @@ for CC in "$@"; do
           END IF;
         END \$\$;"
 
-    # Build a filtered TOC list: exclude external_id_seq, natural_feature, and alias_osm
-    # (restored separately via staging/ON CONFLICT to handle border duplicates)
+    # Build a filtered TOC list: exclude tables restored separately via ON CONFLICT DO NOTHING
+    # (border objects share osm_ids / internal_ids across countries)
     TOC_FILE="$(mktemp)"
     pg_restore -l "$DUMP_DIR" \
         | grep -v 'external_id_seq' \
         | grep -v 'TABLE DATA public natural_feature' \
         | grep -v 'TABLE DATA public alias_osm' \
+        | grep -v 'TABLE DATA public object_registry' \
         > "$TOC_FILE"
 
     pg_restore --data-only --disable-triggers \
@@ -94,6 +95,22 @@ for CC in "$@"; do
              DROP TABLE natural_feature_stage;"
     fi
     rm -f "$NF_SQL"
+
+    # Restore object_registry with ON CONFLICT DO NOTHING (border objects have same internal_id across countries)
+    echo "Restoring object_registry (ON CONFLICT DO NOTHING)..."
+    OR_SQL="$(mktemp --suffix=.sql)"
+    pg_restore --data-only --table=object_registry -f "$OR_SQL" "$DUMP_DIR" 2>/dev/null || true
+    if [ -s "$OR_SQL" ]; then
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+            "DROP TABLE IF EXISTS object_registry_stage;
+             CREATE UNLOGGED TABLE object_registry_stage (LIKE object_registry);"
+        sed 's/COPY public\.object_registry /COPY public.object_registry_stage /' "$OR_SQL" | \
+            psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+            "INSERT INTO object_registry SELECT * FROM object_registry_stage ON CONFLICT (internal_id) DO NOTHING;
+             DROP TABLE object_registry_stage;"
+    fi
+    rm -f "$OR_SQL"
 
     # Restore alias_osm with ON CONFLICT DO NOTHING (border osm_ids appear in multiple countries)
     echo "Restoring alias_osm (ON CONFLICT DO NOTHING)..."
