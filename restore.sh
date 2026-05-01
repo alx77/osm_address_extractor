@@ -18,6 +18,17 @@ if [ $# -lt 1 ]; then
     exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOCK_FILE="$SCRIPT_DIR/.restore.lock"
+
+# Prevent parallel restores — two concurrent runs would race on object_registry IDs.
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "ERROR: another restore is already running ($LOCK_FILE is locked). Aborting."
+    exit 1
+fi
+trap 'rm -f "$LOCK_FILE"' EXIT
+
 HOST="${HOST:-localhost}"
 PORT="${PORT:-5432}"
 USER="${USER:-postgres}"
@@ -123,7 +134,8 @@ for CC in "$@"; do
         sed 's/COPY public\.alias_osm /COPY public.alias_osm_stage /' "$AO_SQL" | \
             psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
         psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
-            "INSERT INTO alias_osm SELECT * FROM alias_osm_stage ON CONFLICT (osm_id) DO NOTHING;
+            "INSERT INTO alias_osm SELECT * FROM alias_osm_stage
+             ON CONFLICT (osm_id) DO UPDATE SET internal_id = EXCLUDED.internal_id;
              DROP TABLE alias_osm_stage;"
     fi
     rm -f "$AO_SQL"
