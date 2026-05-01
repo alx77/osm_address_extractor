@@ -61,10 +61,14 @@ for CC in "$@"; do
           END IF;
         END \$\$;"
 
-    # Build a filtered TOC list: exclude external_id_seq and natural_feature
-    # (natural_feature is restored separately via staging to handle border duplicates)
+    # Build a filtered TOC list: exclude external_id_seq, natural_feature, and alias_osm
+    # (restored separately via staging/ON CONFLICT to handle border duplicates)
     TOC_FILE="$(mktemp)"
-    pg_restore -l "$DUMP_DIR" | grep -v 'external_id_seq' | grep -v 'TABLE DATA public natural_feature' > "$TOC_FILE"
+    pg_restore -l "$DUMP_DIR" \
+        | grep -v 'external_id_seq' \
+        | grep -v 'TABLE DATA public natural_feature' \
+        | grep -v 'TABLE DATA public alias_osm' \
+        > "$TOC_FILE"
 
     pg_restore --data-only --disable-triggers \
         -h "$HOST" -p "$PORT" -U "$USER" -d gis \
@@ -90,6 +94,22 @@ for CC in "$@"; do
              DROP TABLE natural_feature_stage;"
     fi
     rm -f "$NF_SQL"
+
+    # Restore alias_osm with ON CONFLICT DO NOTHING (border osm_ids appear in multiple countries)
+    echo "Restoring alias_osm (ON CONFLICT DO NOTHING)..."
+    AO_SQL="$(mktemp --suffix=.sql)"
+    pg_restore --data-only --table=alias_osm -f "$AO_SQL" "$DUMP_DIR" 2>/dev/null || true
+    if [ -s "$AO_SQL" ]; then
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+            "DROP TABLE IF EXISTS alias_osm_stage;
+             CREATE UNLOGGED TABLE alias_osm_stage (LIKE alias_osm INCLUDING ALL);"
+        sed 's/COPY public\.alias_osm /COPY public.alias_osm_stage /' "$AO_SQL" | \
+            psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+            "INSERT INTO alias_osm SELECT * FROM alias_osm_stage ON CONFLICT (osm_id) DO NOTHING;
+             DROP TABLE alias_osm_stage;"
+    fi
+    rm -f "$AO_SQL"
 
     echo "Row counts after $CC restore:"
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
