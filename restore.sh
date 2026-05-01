@@ -89,6 +89,22 @@ for CC in "$@"; do
 
     rm -f "$TOC_FILE"
 
+    # Restore object_registry first — natural_feature has a FK on it.
+    echo "Restoring object_registry (ON CONFLICT DO NOTHING)..."
+    OR_SQL="$(mktemp --suffix=.sql)"
+    pg_restore --data-only --table=object_registry -f "$OR_SQL" "$DUMP_DIR" 2>/dev/null || true
+    if [ -s "$OR_SQL" ]; then
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+            "DROP TABLE IF EXISTS object_registry_stage;
+             CREATE UNLOGGED TABLE object_registry_stage (LIKE object_registry);"
+        sed 's/COPY public\.object_registry /COPY public.object_registry_stage /' "$OR_SQL" | \
+            psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+            "INSERT INTO object_registry SELECT * FROM object_registry_stage ON CONFLICT (internal_id) DO NOTHING;
+             DROP TABLE object_registry_stage;"
+    fi
+    rm -f "$OR_SQL"
+
     # Restore natural_feature via staging: pg_restore uses COPY internally which
     # doesn't support ON CONFLICT, so we dump to SQL, redirect COPY to a staging
     # table (no PK), then INSERT ... ON CONFLICT DO NOTHING into the real table.
@@ -106,22 +122,6 @@ for CC in "$@"; do
              DROP TABLE natural_feature_stage;"
     fi
     rm -f "$NF_SQL"
-
-    # Restore object_registry with ON CONFLICT DO NOTHING (border objects have same internal_id across countries)
-    echo "Restoring object_registry (ON CONFLICT DO NOTHING)..."
-    OR_SQL="$(mktemp --suffix=.sql)"
-    pg_restore --data-only --table=object_registry -f "$OR_SQL" "$DUMP_DIR" 2>/dev/null || true
-    if [ -s "$OR_SQL" ]; then
-        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
-            "DROP TABLE IF EXISTS object_registry_stage;
-             CREATE UNLOGGED TABLE object_registry_stage (LIKE object_registry);"
-        sed 's/COPY public\.object_registry /COPY public.object_registry_stage /' "$OR_SQL" | \
-            psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
-        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
-            "INSERT INTO object_registry SELECT * FROM object_registry_stage ON CONFLICT (internal_id) DO NOTHING;
-             DROP TABLE object_registry_stage;"
-    fi
-    rm -f "$OR_SQL"
 
     # Restore alias_osm with ON CONFLICT DO NOTHING (border osm_ids appear in multiple countries)
     echo "Restoring alias_osm (ON CONFLICT DO NOTHING)..."
