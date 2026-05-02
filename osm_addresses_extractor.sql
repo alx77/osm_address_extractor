@@ -188,7 +188,7 @@ CREATE INDEX idx_osm_buildings_way_addr
 DROP INDEX IF EXISTS import.idx_osm_housenumbers_way_addr;
 CREATE INDEX idx_osm_housenumbers_way_addr
     ON import.osm_housenumbers USING gist (way)
-    WHERE "addr:street" IS NOT NULL AND "addr:street" <> '' AND housenumber IS NOT NULL;
+    WHERE "addr:street" IS NOT NULL AND "addr:street" <> '' AND type IS NOT NULL;
 
 DROP INDEX IF EXISTS import.idx_osm_admin_level;
 CREATE INDEX idx_osm_admin_level
@@ -538,7 +538,7 @@ WITH buildings_raw AS (
     -- branch 4: address/entrance nodes with addr:street tag (common in DE for building entrances)
     SELECT
         h.osm_id,
-        h.housenumber,
+        h.type AS housenumber,
         h."addr:postcode" AS postcode,
         h.way,
         str.osm_id AS street_id
@@ -546,7 +546,7 @@ WITH buildings_raw AS (
     JOIN street str
         ON str.name = h."addr:street" AND ST_DWithin(h.way, str.way_3857, 400)
     WHERE h."addr:street" IS NOT NULL AND h."addr:street" <> ''
-      AND h.housenumber IS NOT NULL AND h.housenumber <> ''
+      AND h.type IS NOT NULL AND h.type <> ''
 )
 , buildings_unique AS materialized (
     SELECT DISTINCT ON (osm_id)
