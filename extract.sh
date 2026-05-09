@@ -10,7 +10,7 @@ set -e
 
 FILENAME=$(basename -- "$1")
 CACHE_FILE="/cache/$FILENAME"
-CACHE_MAX_DAYS=3
+CACHE_MAX_DAYS=7
 
 if [ -f "$CACHE_FILE" ]; then
     CACHE_AGE_DAYS=$(( ( $(date +%s) - $(stat -c %Y "$CACHE_FILE") ) / 86400 ))
