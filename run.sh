@@ -145,6 +145,9 @@ for CC in "${COUNTRIES[@]}"; do
     docker exec "$CONTAINER" bash -c "/extract.sh $URL $CC $ID_OFFSET" \
         2>&1 | tee "$SCRIPT_DIR/results/extract_${CC}.log"
 
+    echo "Stopping extractor container before restore to free memory..."
+    docker stop "$CONTAINER" 2>/dev/null || true
+
     echo "=== $CC extracted, restoring to production DB ==="
     HOST="$PROD_HOST" PORT="$PROD_PORT" USER="$PROD_USER" \
         "$SCRIPT_DIR/restore.sh" "$CC" \

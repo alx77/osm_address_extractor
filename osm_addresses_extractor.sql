@@ -509,8 +509,13 @@ DROP TABLE IF EXISTS wikipedia_redirect;
 -- Branch 3 (associatedStreet relation) kept — cheap index lookup.
 -- building.street_id temporarily stores street.osm_id for the join;
 -- it is remapped to street.id (compact) at the end of the script.
-INSERT INTO building (osm_id, osm_ids, way, street_id, housenumber, postcode, lon, lat)
-WITH buildings_raw AS (
+-- Materialize buildings_raw into a temp table so the data lands on disk
+-- rather than in shared_buffers/work_mem. For large countries (DE) branch 4
+-- adds millions of address nodes that would otherwise blow RAM as a CTE.
+CREATE TEMP TABLE buildings_unique AS
+SELECT DISTINCT ON (osm_id)
+    osm_id, housenumber, postcode, way, street_id
+FROM (
     -- branch 2: building has addr:housenumber + addr:street tags (main branch)
     SELECT
         b.osm_id,
@@ -547,16 +552,20 @@ WITH buildings_raw AS (
         ON str.name = h."addr:street" AND ST_DWithin(h.way, str.way_3857, 400)
     WHERE h."addr:street" IS NOT NULL AND h."addr:street" <> ''
       AND h.type IS NOT NULL AND h.type <> ''
-)
-, buildings_unique AS materialized (
-    SELECT DISTINCT ON (osm_id)
-        osm_id, housenumber, postcode, way, street_id
-    FROM buildings_raw
-)
-, building_clusters AS materialized (
+) buildings_raw
+ORDER BY osm_id;
+
+-- Index allows the DBSCAN window function to stream one (housenumber, street_id)
+-- partition at a time instead of holding all rows in RAM simultaneously.
+CREATE INDEX ON buildings_unique (housenumber, street_id);
+ANALYZE buildings_unique;
+
+INSERT INTO building (osm_id, osm_ids, way, street_id, housenumber, postcode, lon, lat)
+WITH building_clusters AS (
     SELECT
         ST_ClusterDBSCAN(way, eps := 100, minpoints := 1) OVER (
             PARTITION BY housenumber, street_id
+            ORDER BY housenumber, street_id
         ) AS cluster_id,
         osm_id, housenumber, postcode, way, street_id
     FROM buildings_unique
