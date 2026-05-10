@@ -200,7 +200,7 @@ CREATE INDEX idx_osm_admin_place
 
 -- ─── country ─────────────────────────────────────────────────────────────────
 INSERT INTO country (osm_id, name, tags, way, lon, lat)
-SELECT DISTINCT ON (osm_id)
+SELECT
     osm_id,
     name,
     tags,
@@ -208,7 +208,9 @@ SELECT DISTINCT ON (osm_id)
     ST_X(ST_Transform(ST_Centroid(way), 4326)),
     ST_Y(ST_Transform(ST_Centroid(way), 4326))
 FROM import.osm_admin
-WHERE admin_level = 2;
+WHERE admin_level = 2
+ORDER BY ST_Area(way) DESC
+LIMIT 1;
 
 UPDATE country
 SET country_code = :'country_code';
