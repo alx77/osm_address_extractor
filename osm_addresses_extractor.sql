@@ -494,6 +494,35 @@ BEGIN
     END IF;
 END $$;
 
+-- Deduplicate: rivers/canals/lakes are split into many OSM way segments with
+-- different osm_ids. Merge segments within the same (name, type, state_osm_id,
+-- country_code) group: update the representative row with the true centroid on
+-- the merged geometry, then delete the rest.
+WITH groups AS (
+    SELECT
+        min(id)                               AS rep_id,
+        name, type, state_osm_id, country_code,
+        ST_PointOnSurface(ST_Collect(way))    AS center,
+        max(importance)                        AS best_importance
+    FROM natural_feature
+    GROUP BY name, type, state_osm_id, country_code
+)
+UPDATE natural_feature nf
+SET
+    lon        = ST_X(g.center),
+    lat        = ST_Y(g.center),
+    way        = g.center,
+    importance = g.best_importance
+FROM groups g
+WHERE nf.id = g.rep_id;
+
+DELETE FROM natural_feature
+WHERE id NOT IN (
+    SELECT min(id)
+    FROM natural_feature
+    GROUP BY name, type, state_osm_id, country_code
+);
+
 CREATE INDEX idx_natural_feature_way ON natural_feature USING gist (way);
 ANALYZE natural_feature;
 
