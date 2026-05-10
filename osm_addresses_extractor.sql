@@ -500,7 +500,7 @@ END $$;
 -- the merged geometry, then delete the rest.
 WITH groups AS (
     SELECT
-        min(id)                               AS rep_id,
+        min(osm_id)                           AS rep_osm_id,
         name, type, state_osm_id, country_code,
         ST_PointOnSurface(ST_Collect(way))    AS center,
         max(importance)                        AS best_importance
@@ -514,11 +514,11 @@ SET
     way        = g.center,
     importance = g.best_importance
 FROM groups g
-WHERE nf.id = g.rep_id;
+WHERE nf.osm_id = g.rep_osm_id;
 
 DELETE FROM natural_feature
-WHERE id NOT IN (
-    SELECT min(id)
+WHERE osm_id NOT IN (
+    SELECT min(osm_id)
     FROM natural_feature
     GROUP BY name, type, state_osm_id, country_code
 );
