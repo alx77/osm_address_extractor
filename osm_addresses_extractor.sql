@@ -13,6 +13,8 @@ SET max_parallel_workers_per_gather = 4;
 -- Uncomment when running under Podman rootless (kernel DSM limits in user ns):
 -- SET max_parallel_workers_per_gather = 0;
 
+\timing on
+
 -- ─── Input variables ─────────────────────────────────────────────────────────
 -- Passed via psql -v:  psql -v id_offset=50000000 -v country_code=UA ...
 \set country_code :country_code
