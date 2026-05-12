@@ -724,8 +724,8 @@ WITH new_streets AS (
         ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(s.lon, s.lat), 4326), 7)
     ) AS rn
     FROM street s
-    LEFT JOIN alias_osm a ON a.osm_id = s.osm_id
-    WHERE s.osm_id IS NOT NULL AND a.osm_id IS NULL
+    WHERE s.osm_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM alias_osm a WHERE a.osm_id = s.osm_id)
 ),
 ins_reg AS (
     INSERT INTO object_registry (object_type)
@@ -746,8 +746,8 @@ WITH new_buildings AS (
         ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(b.lon, b.lat), 4326), 7)
     ) AS rn
     FROM building b
-    LEFT JOIN alias_osm a ON a.osm_id = b.osm_id
-    WHERE b.osm_id IS NOT NULL AND a.osm_id IS NULL
+    WHERE b.osm_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM alias_osm a WHERE a.osm_id = b.osm_id)
 ),
 ins_reg AS (
     INSERT INTO object_registry (object_type)
@@ -768,8 +768,8 @@ WITH new_cities AS (
         ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(c.lon, c.lat), 4326), 7)
     ) AS rn
     FROM city c
-    LEFT JOIN alias_osm a ON a.osm_id = c.osm_id
-    WHERE c.osm_id IS NOT NULL AND a.osm_id IS NULL
+    WHERE c.osm_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM alias_osm a WHERE a.osm_id = c.osm_id)
 ),
 ins_reg AS (
     INSERT INTO object_registry (object_type)
@@ -790,8 +790,8 @@ WITH new_states AS (
         ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(s.lon, s.lat), 4326), 7)
     ) AS rn
     FROM state s
-    LEFT JOIN alias_osm a ON a.osm_id = s.osm_id
-    WHERE s.osm_id IS NOT NULL AND a.osm_id IS NULL
+    WHERE s.osm_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM alias_osm a WHERE a.osm_id = s.osm_id)
 ),
 ins_reg AS (
     INSERT INTO object_registry (object_type)
