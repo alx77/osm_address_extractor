@@ -678,16 +678,29 @@ ALTER TABLE street DROP COLUMN IF EXISTS way_3857;
 -- Default (0) is correct for the first country loaded into a fresh DB.
 \set id_offset :id_offset
 
-UPDATE street s
-SET id = sub.rn + :id_offset
-FROM (
-    SELECT osm_id,
-           ROW_NUMBER() OVER (
-               ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)
-           )::integer AS rn
-    FROM street
-) sub
-WHERE s.osm_id = sub.osm_id;
+-- ─── Align object_registry sequence to country offset ───────────────────────
+SELECT setval('object_registry_internal_id_seq', GREATEST(:id_offset, 1));
+
+-- ─── Assign id + internal_id for streets ────────────────────────────────────
+-- Single pass: rn gives compact GeoHash-ordered id; nextval gives internal_id.
+-- ROW_NUMBER() OVER () preserves subquery ORDER BY order (no extra sort).
+CREATE TEMP TABLE _ids_street AS
+SELECT osm_id,
+       (ROW_NUMBER() OVER ())::integer AS rn,
+       nextval('object_registry_internal_id_seq') AS internal_id
+FROM (SELECT osm_id, lon, lat FROM street
+      ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)) s;
+
+INSERT INTO object_registry (internal_id, object_type)
+SELECT internal_id, 'street' FROM _ids_street;
+
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT osm_id, internal_id FROM _ids_street WHERE osm_id IS NOT NULL ON CONFLICT DO NOTHING;
+
+UPDATE street SET id = t.rn + :id_offset, internal_id = t.internal_id
+FROM _ids_street t WHERE t.osm_id = street.osm_id;
+
+DROP TABLE _ids_street;
 
 -- Remap building.street_id from osm_id space to compact id space.
 UPDATE building b
@@ -695,48 +708,12 @@ SET street_id = s.id
 FROM street s
 WHERE s.osm_id = b.street_id;
 
-UPDATE building b
-SET id = sub.rn + :id_offset
-FROM (
-    SELECT osm_id,
-           ROW_NUMBER() OVER (
-               ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)
-           )::integer AS rn
-    FROM building
-) sub
-WHERE b.osm_id = sub.osm_id;
-
--- ─── Align object_registry sequence to country offset ───────────────────────
--- Same slot system as compact id: each country gets 50M IDs starting at id_offset.
--- This ensures internal_ids are globally unique across countries in production.
-SELECT setval('object_registry_internal_id_seq', GREATEST(:id_offset, 1));
-
--- ─── Assign internal_ids from object_registry ────────────────────────────────
--- nextval() is called in GeoHash order (volatile functions evaluate after ORDER BY),
--- so spatially nearby objects get nearby IDs → better RoaringBitmap density.
--- ON CONFLICT DO NOTHING makes each block restart-safe.
-
--- streets
-CREATE TEMP TABLE _ids_street AS
-SELECT osm_id, nextval('object_registry_internal_id_seq') AS internal_id
-FROM (SELECT osm_id, lon, lat FROM street WHERE osm_id IS NOT NULL
-      ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)) s;
-
-INSERT INTO object_registry (internal_id, object_type)
-SELECT internal_id, 'street' FROM _ids_street;
-
-INSERT INTO alias_osm (osm_id, internal_id)
-SELECT osm_id, internal_id FROM _ids_street ON CONFLICT DO NOTHING;
-
-UPDATE street SET internal_id = t.internal_id
-FROM _ids_street t WHERE t.osm_id = street.osm_id;
-
-DROP TABLE _ids_street;
-
--- buildings
+-- ─── Assign id + internal_id for buildings ───────────────────────────────────
 CREATE TEMP TABLE _ids_building AS
-SELECT osm_id, nextval('object_registry_internal_id_seq') AS internal_id
-FROM (SELECT osm_id, lon, lat FROM building WHERE osm_id IS NOT NULL
+SELECT osm_id,
+       (ROW_NUMBER() OVER ())::integer AS rn,
+       nextval('object_registry_internal_id_seq') AS internal_id
+FROM (SELECT osm_id, lon, lat FROM building
       ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)) s;
 
 CREATE INDEX ON _ids_building (osm_id);
@@ -745,9 +722,9 @@ INSERT INTO object_registry (internal_id, object_type)
 SELECT internal_id, 'building' FROM _ids_building;
 
 INSERT INTO alias_osm (osm_id, internal_id)
-SELECT osm_id, internal_id FROM _ids_building ON CONFLICT DO NOTHING;
+SELECT osm_id, internal_id FROM _ids_building WHERE osm_id IS NOT NULL ON CONFLICT DO NOTHING;
 
-UPDATE building SET internal_id = t.internal_id
+UPDATE building SET id = t.rn + :id_offset, internal_id = t.internal_id
 FROM _ids_building t WHERE t.osm_id = building.osm_id;
 
 DROP TABLE _ids_building;
