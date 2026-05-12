@@ -423,6 +423,10 @@ SET importance = c.importance
 FROM city c
 WHERE c.osm_id = s.city_osm_id;
 
+-- Spatial indexes for the natural_feature → state/city containment joins.
+CREATE INDEX idx_state_way ON state USING gist (way);
+CREATE INDEX idx_city_way  ON city  USING gist (way);
+
 -- ─── natural_feature ─────────────────────────────────────────────────────────
 -- Merged from osm_natural_points, osm_natural_areas, osm_waterways.
 -- city_osm_id: set only when feature centroid is inside a city polygon (e.g. Труханів→Київ).
@@ -685,8 +689,6 @@ FROM (
 ) sub
 WHERE s.osm_id = sub.osm_id;
 
-ALTER TABLE street ALTER COLUMN id SET NOT NULL;
-
 -- Remap building.street_id from osm_id space to compact id space.
 UPDATE building b
 SET street_id = s.id
@@ -703,8 +705,6 @@ FROM (
     FROM building
 ) sub
 WHERE b.osm_id = sub.osm_id;
-
-ALTER TABLE building ALTER COLUMN id SET NOT NULL;
 
 -- ─── Align object_registry sequence to country offset ───────────────────────
 -- Same slot system as compact id: each country gets 50M IDs starting at id_offset.
