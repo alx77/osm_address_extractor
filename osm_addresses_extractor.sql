@@ -712,143 +712,113 @@ ALTER TABLE building ALTER COLUMN id SET NOT NULL;
 SELECT setval('object_registry_internal_id_seq', GREATEST(:id_offset, 1));
 
 -- ─── Assign internal_ids from object_registry ────────────────────────────────
--- New objects (not yet in alias_osm) get a new BIGSERIAL in GeoHash order
+-- nextval() is called in GeoHash order (volatile functions evaluate after ORDER BY),
 -- so spatially nearby objects get nearby IDs → better RoaringBitmap density.
--- Existing objects reuse their internal_id → stable across re-extractions.
--- Objects with osm_id IS NULL (non-OSM sources) are skipped here;
--- they will be handled by their own alias_* table.
+-- ON CONFLICT DO NOTHING makes each block restart-safe.
 
 -- streets
-WITH new_streets AS (
-    SELECT s.osm_id, ROW_NUMBER() OVER (
-        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(s.lon, s.lat), 4326), 7)
-    ) AS rn
-    FROM street s
-    WHERE s.osm_id IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM alias_osm a WHERE a.osm_id = s.osm_id)
-),
-ins_reg AS (
-    INSERT INTO object_registry (object_type)
-    SELECT 'street' FROM new_streets ORDER BY rn
-    RETURNING internal_id
-),
-ins_rn AS (
-    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
-)
-INSERT INTO alias_osm (osm_id, internal_id)
-SELECT n.osm_id, r.internal_id FROM new_streets n JOIN ins_rn r ON n.rn = r.rn;
+CREATE TEMP TABLE _ids_street AS
+SELECT osm_id, nextval('object_registry_internal_id_seq') AS internal_id
+FROM (SELECT osm_id, lon, lat FROM street WHERE osm_id IS NOT NULL
+      ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)) s;
 
-UPDATE street s SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = s.osm_id;
+INSERT INTO object_registry (internal_id, object_type)
+SELECT internal_id, 'street' FROM _ids_street;
+
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT osm_id, internal_id FROM _ids_street ON CONFLICT DO NOTHING;
+
+UPDATE street SET internal_id = t.internal_id
+FROM _ids_street t WHERE t.osm_id = street.osm_id;
+
+DROP TABLE _ids_street;
 
 -- buildings
-WITH new_buildings AS (
-    SELECT b.osm_id, ROW_NUMBER() OVER (
-        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(b.lon, b.lat), 4326), 7)
-    ) AS rn
-    FROM building b
-    WHERE b.osm_id IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM alias_osm a WHERE a.osm_id = b.osm_id)
-),
-ins_reg AS (
-    INSERT INTO object_registry (object_type)
-    SELECT 'building' FROM new_buildings ORDER BY rn
-    RETURNING internal_id
-),
-ins_rn AS (
-    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
-)
-INSERT INTO alias_osm (osm_id, internal_id)
-SELECT n.osm_id, r.internal_id FROM new_buildings n JOIN ins_rn r ON n.rn = r.rn;
+CREATE TEMP TABLE _ids_building AS
+SELECT osm_id, nextval('object_registry_internal_id_seq') AS internal_id
+FROM (SELECT osm_id, lon, lat FROM building WHERE osm_id IS NOT NULL
+      ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)) s;
 
-UPDATE building b SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = b.osm_id;
+CREATE INDEX ON _ids_building (osm_id);
+
+INSERT INTO object_registry (internal_id, object_type)
+SELECT internal_id, 'building' FROM _ids_building;
+
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT osm_id, internal_id FROM _ids_building ON CONFLICT DO NOTHING;
+
+UPDATE building SET internal_id = t.internal_id
+FROM _ids_building t WHERE t.osm_id = building.osm_id;
+
+DROP TABLE _ids_building;
 
 -- cities
-WITH new_cities AS (
-    SELECT c.osm_id, ROW_NUMBER() OVER (
-        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(c.lon, c.lat), 4326), 7)
-    ) AS rn
-    FROM city c
-    WHERE c.osm_id IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM alias_osm a WHERE a.osm_id = c.osm_id)
-),
-ins_reg AS (
-    INSERT INTO object_registry (object_type)
-    SELECT 'city' FROM new_cities ORDER BY rn
-    RETURNING internal_id
-),
-ins_rn AS (
-    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
-)
-INSERT INTO alias_osm (osm_id, internal_id)
-SELECT n.osm_id, r.internal_id FROM new_cities n JOIN ins_rn r ON n.rn = r.rn;
+CREATE TEMP TABLE _ids_city AS
+SELECT osm_id, nextval('object_registry_internal_id_seq') AS internal_id
+FROM (SELECT osm_id, lon, lat FROM city WHERE osm_id IS NOT NULL
+      ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)) s;
 
-UPDATE city c SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = c.osm_id;
+INSERT INTO object_registry (internal_id, object_type)
+SELECT internal_id, 'city' FROM _ids_city;
+
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT osm_id, internal_id FROM _ids_city ON CONFLICT DO NOTHING;
+
+UPDATE city SET internal_id = t.internal_id
+FROM _ids_city t WHERE t.osm_id = city.osm_id;
+
+DROP TABLE _ids_city;
 
 -- states
-WITH new_states AS (
-    SELECT s.osm_id, ROW_NUMBER() OVER (
-        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(s.lon, s.lat), 4326), 7)
-    ) AS rn
-    FROM state s
-    WHERE s.osm_id IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM alias_osm a WHERE a.osm_id = s.osm_id)
-),
-ins_reg AS (
-    INSERT INTO object_registry (object_type)
-    SELECT 'state' FROM new_states ORDER BY rn
-    RETURNING internal_id
-),
-ins_rn AS (
-    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
-)
-INSERT INTO alias_osm (osm_id, internal_id)
-SELECT n.osm_id, r.internal_id FROM new_states n JOIN ins_rn r ON n.rn = r.rn;
+CREATE TEMP TABLE _ids_state AS
+SELECT osm_id, nextval('object_registry_internal_id_seq') AS internal_id
+FROM (SELECT osm_id, lon, lat FROM state WHERE osm_id IS NOT NULL
+      ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)) s;
 
-UPDATE state s SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = s.osm_id;
+INSERT INTO object_registry (internal_id, object_type)
+SELECT internal_id, 'state' FROM _ids_state;
+
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT osm_id, internal_id FROM _ids_state ON CONFLICT DO NOTHING;
+
+UPDATE state SET internal_id = t.internal_id
+FROM _ids_state t WHERE t.osm_id = state.osm_id;
+
+DROP TABLE _ids_state;
 
 -- countries
-WITH new_countries AS (
-    SELECT c.osm_id, ROW_NUMBER() OVER (
-        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(c.lon, c.lat), 4326), 7)
-    ) AS rn
-    FROM country c
-    WHERE c.osm_id IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM alias_osm a WHERE a.osm_id = c.osm_id)
-),
-ins_reg AS (
-    INSERT INTO object_registry (object_type)
-    SELECT 'country' FROM new_countries ORDER BY rn
-    RETURNING internal_id
-),
-ins_rn AS (
-    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
-)
-INSERT INTO alias_osm (osm_id, internal_id)
-SELECT n.osm_id, r.internal_id FROM new_countries n JOIN ins_rn r ON n.rn = r.rn;
+CREATE TEMP TABLE _ids_country AS
+SELECT osm_id, nextval('object_registry_internal_id_seq') AS internal_id
+FROM (SELECT osm_id, lon, lat FROM country WHERE osm_id IS NOT NULL
+      ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)) s;
 
-UPDATE country c SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = c.osm_id;
+INSERT INTO object_registry (internal_id, object_type)
+SELECT internal_id, 'country' FROM _ids_country;
+
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT osm_id, internal_id FROM _ids_country ON CONFLICT DO NOTHING;
+
+UPDATE country SET internal_id = t.internal_id
+FROM _ids_country t WHERE t.osm_id = country.osm_id;
+
+DROP TABLE _ids_country;
 
 -- natural_features
-WITH new_features AS (
-    SELECT nf.osm_id, ROW_NUMBER() OVER (
-        ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(nf.lon, nf.lat), 4326), 7)
-    ) AS rn
-    FROM natural_feature nf
-    WHERE nf.osm_id IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM alias_osm a WHERE a.osm_id = nf.osm_id)
-),
-ins_reg AS (
-    INSERT INTO object_registry (object_type)
-    SELECT 'natural_feature' FROM new_features ORDER BY rn
-    RETURNING internal_id
-),
-ins_rn AS (
-    SELECT internal_id, ROW_NUMBER() OVER (ORDER BY internal_id) AS rn FROM ins_reg
-)
-INSERT INTO alias_osm (osm_id, internal_id)
-SELECT n.osm_id, r.internal_id FROM new_features n JOIN ins_rn r ON n.rn = r.rn;
+CREATE TEMP TABLE _ids_natural_feature AS
+SELECT osm_id, nextval('object_registry_internal_id_seq') AS internal_id
+FROM (SELECT osm_id, lon, lat FROM natural_feature WHERE osm_id IS NOT NULL
+      ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)) s;
 
-UPDATE natural_feature nf SET internal_id = a.internal_id FROM alias_osm a WHERE a.osm_id = nf.osm_id;
+INSERT INTO object_registry (internal_id, object_type)
+SELECT internal_id, 'natural_feature' FROM _ids_natural_feature;
+
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT osm_id, internal_id FROM _ids_natural_feature ON CONFLICT DO NOTHING;
+
+UPDATE natural_feature SET internal_id = t.internal_id
+FROM _ids_natural_feature t WHERE t.osm_id = natural_feature.osm_id;
+
+DROP TABLE _ids_natural_feature;
 
 -- ─── Primary keys and final indexes ──────────────────────────────────────────
 ALTER TABLE street   ADD CONSTRAINT pk_street   PRIMARY KEY (id);
