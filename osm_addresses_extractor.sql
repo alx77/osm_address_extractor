@@ -66,77 +66,85 @@ CREATE UNLOGGED TABLE IF NOT EXISTS country (
 );
 
 CREATE UNLOGGED TABLE IF NOT EXISTS state (
-    osm_id         bigint,
-    internal_id    bigint,
-    name           text,
-    country_osm_id bigint,
-    tags           hstore,
-    way            geometry(Geometry, 4326),
-    lon            float8,
-    lat            float8,
-    country_code   text,
-    updated_at     timestamptz NOT NULL DEFAULT now(),
-    deleted_at     timestamptz
+    osm_id            bigint,
+    internal_id       bigint,
+    name              text,
+    country_osm_id    bigint,
+    tags              hstore,
+    way               geometry(Geometry, 4326),
+    lon               float8,
+    lat               float8,
+    country_code      text,
+    validation_status smallint NOT NULL DEFAULT 0,
+    validation_score  real     NOT NULL DEFAULT 1.0,
+    updated_at        timestamptz NOT NULL DEFAULT now(),
+    deleted_at        timestamptz
 );
 
 CREATE UNLOGGED TABLE IF NOT EXISTS city (
-    osm_id          bigint,
-    internal_id     bigint,
-    name            text,
-    place           text,
-    postal_code     text,
-    tags            hstore,
-    admin_level     integer,
-    state_osm_id    bigint,
-    district_osm_id bigint,
-    importance      float8,
-    way_origin      geometry(Geometry, 3857),
-    way             geometry(Geometry, 4326),
-    lon             float8,
-    lat             float8,
-    country_code    text,
-    updated_at      timestamptz NOT NULL DEFAULT now(),
-    deleted_at      timestamptz
+    osm_id            bigint,
+    internal_id       bigint,
+    name              text,
+    place             text,
+    postal_code       text,
+    tags              hstore,
+    admin_level       integer,
+    state_osm_id      bigint,
+    district_osm_id   bigint,
+    importance        float8,
+    way_origin        geometry(Geometry, 3857),
+    way               geometry(Geometry, 4326),
+    lon               float8,
+    lat               float8,
+    country_code      text,
+    validation_status smallint NOT NULL DEFAULT 0,
+    validation_score  real     NOT NULL DEFAULT 1.0,
+    updated_at        timestamptz NOT NULL DEFAULT now(),
+    deleted_at        timestamptz
 );
 
 CREATE UNLOGGED TABLE IF NOT EXISTS natural_feature (
-    osm_id       bigint,
-    internal_id  bigint,
-    name         text,
-    tags         hstore,
-    type         text,
-    way          geometry(Geometry, 4326),
-    lon          float8,
-    lat          float8,
-    state_osm_id bigint,
-    city_osm_id  bigint,
-    country_code text,
-    importance   float8,
-    updated_at   timestamptz NOT NULL DEFAULT now(),
-    deleted_at   timestamptz
+    osm_id            bigint,
+    internal_id       bigint,
+    name              text,
+    tags              hstore,
+    type              text,
+    way               geometry(Geometry, 4326),
+    lon               float8,
+    lat               float8,
+    state_osm_id      bigint,
+    city_osm_id       bigint,
+    country_code      text,
+    importance        float8,
+    validation_status smallint NOT NULL DEFAULT 0,
+    validation_score  real     NOT NULL DEFAULT 1.0,
+    updated_at        timestamptz NOT NULL DEFAULT now(),
+    deleted_at        timestamptz
 );
 
 CREATE UNLOGGED TABLE IF NOT EXISTS street (
-    id           integer,          -- compact surrogate PK (GeoHash order, assigned at end)
-    internal_id  bigint,           -- stable external ID from object_registry
-    osm_id       bigint,           -- min(osm_id) of the cluster; NULL for non-OSM sources
-    name         text NOT NULL,
-    city_osm_id  bigint,
-    rel_osm_ids  bigint[],
-    osm_ids      bigint[],
-    city_area    float8,
-    tags         hstore,
-    importance   float8,
-    postcodes    text[],          -- all postcodes from buildings, sorted by frequency (postcodes[1] = most common)
-    way          geometry(Geometry, 4326),
-    way_3857     geometry,        -- temp column for building spatial join; dropped at end
-    lon          float8,
-    lat          float8,
-    country_code text,
-    source_id    smallint NOT NULL DEFAULT 1,
-    source_ref   text,
-    updated_at   timestamptz NOT NULL DEFAULT now(),
-    deleted_at   timestamptz
+    id                integer,          -- compact surrogate PK (GeoHash order, assigned at end)
+    internal_id       bigint,           -- stable external ID from object_registry
+    osm_id            bigint,           -- min(osm_id) of the cluster; NULL for non-OSM sources
+    name              text NOT NULL,
+    city_osm_id       bigint,
+    rel_osm_ids       bigint[],
+    osm_ids           bigint[],
+    city_area         float8,
+    tags              hstore,
+    importance        float8,
+    postcodes         text[],          -- all postcodes from buildings, sorted by frequency (postcodes[1] = most common)
+    way               geometry(Geometry, 4326),
+    way_3857          geometry,        -- temp column for building spatial join; dropped at end
+    lon               float8,
+    lat               float8,
+    country_code      text,
+    source_id         smallint NOT NULL DEFAULT 1,
+    source_ref        text,
+    validation_status smallint NOT NULL DEFAULT 0,
+    validation_score  real     NOT NULL DEFAULT 1.0,
+    updated_at        timestamptz NOT NULL DEFAULT now(),
+    deleted_at        timestamptz
 );
 
 CREATE UNLOGGED TABLE IF NOT EXISTS building (
@@ -532,6 +540,39 @@ WHERE osm_id NOT IN (
 
 CREATE INDEX idx_natural_feature_way ON natural_feature USING gist (way);
 ANALYZE natural_feature;
+
+-- ─── validation_status / validation_score ────────────────────────────────────
+-- status: 0=ok  1=suspect  2=rejected
+-- Rules (worst wins):
+--   2: name has no alphabetic characters
+--   1: name shorter than 3 chars, or contains control characters
+--   1: city has no streets (ghost towns, mapping gaps, import errors)
+DO $$
+DECLARE
+    name_rules TEXT := $r$
+        CASE
+            WHEN NOT (name ~ '[[:alpha:]]') THEN 2
+            WHEN LENGTH(name) < 3 OR name ~ E'[\\x01-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]' THEN 1
+            ELSE 0
+        END
+    $r$;
+    score_rules TEXT := $r$
+        CASE
+            WHEN NOT (name ~ '[[:alpha:]]') THEN 0.0
+            WHEN LENGTH(name) < 3 OR name ~ E'[\\x01-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]' THEN 0.5
+            ELSE 1.0
+        END
+    $r$;
+BEGIN
+    EXECUTE 'UPDATE state          SET validation_status = ' || name_rules || ', validation_score = ' || score_rules;
+    EXECUTE 'UPDATE city           SET validation_status = ' || name_rules || ', validation_score = ' || score_rules;
+    EXECUTE 'UPDATE street         SET validation_status = ' || name_rules || ', validation_score = ' || score_rules;
+    EXECUTE 'UPDATE natural_feature SET validation_status = ' || name_rules || ', validation_score = ' || score_rules;
+END $$;
+
+UPDATE city SET validation_status = 1, validation_score = 0.5
+WHERE validation_status = 0
+  AND NOT EXISTS (SELECT 1 FROM street WHERE street.city_osm_id = city.osm_id);
 
 -- Drop wikipedia tables — used only for importance, not included in the dump.
 DROP TABLE IF EXISTS wikipedia_article;
