@@ -258,9 +258,8 @@ SELECT DISTINCT ON (cit.osm_id)
     ST_X(ST_Transform(ST_Centroid(cit.way), 4326)),
     ST_Y(ST_Transform(ST_Centroid(cit.way), 4326))
 FROM import.osm_admin cit
-JOIN state ON ST_Contains(state.way, ST_Transform(cit.way, 4326))
-WHERE cit.admin_level >= 6 OR cit.place IN ('city','hamlet','town','village')
-   OR (cit.place = 'state' AND cit.name IN ('Berlin', 'Hamburg', 'Bremen'));
+JOIN state ON ST_Covers(state.way, ST_Transform(cit.way, 4326))
+WHERE cit.admin_level >= 6 OR cit.place IN ('city','hamlet','town','village');
 
 UPDATE city
 SET country_code = :'country_code';
