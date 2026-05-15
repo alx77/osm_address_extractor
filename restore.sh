@@ -58,6 +58,7 @@ UNION ALL
 SELECT osm_id, name FROM state           WHERE country_code = '${CC}'
 UNION ALL
 SELECT osm_id, name FROM street          WHERE country_code = '${CC}';
+CREATE INDEX ON _prev_names_${CC_LOWER} (osm_id);
 EOF
 
     echo "Preparing partitions and cleaning existing $CC rows..."
