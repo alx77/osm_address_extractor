@@ -46,6 +46,20 @@ for CC in "$@"; do
     CC_LOWER="${CC,,}"
 
     echo "=== Restoring $CC into gis@$HOST:$PORT ==="
+
+    # Capture current names before any deletions — used for diff detection at the end.
+    # Streets are captured here too because their partition is dropped in the next step.
+    echo "Capturing current names for diff detection..."
+    psql -h "$HOST" -p "$PORT" -U "$USER" -d gis <<EOF
+DROP TABLE IF EXISTS _prev_names_${CC_LOWER};
+CREATE UNLOGGED TABLE _prev_names_${CC_LOWER} AS
+SELECT osm_id, name FROM city            WHERE country_code = '${CC}'
+UNION ALL
+SELECT osm_id, name FROM state           WHERE country_code = '${CC}'
+UNION ALL
+SELECT osm_id, name FROM street          WHERE country_code = '${CC}';
+EOF
+
     echo "Preparing partitions and cleaning existing $CC rows..."
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c "
         DO \$\$ BEGIN
@@ -117,6 +131,14 @@ for CC in "$@"; do
              CREATE UNLOGGED TABLE natural_feature_stage (LIKE natural_feature);"
         sed 's/COPY public\.natural_feature /COPY public.natural_feature_stage /' "$NF_SQL" | \
             psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
+        # Flag name changes: compare staged (new) vs production (old) before ON CONFLICT discards them.
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c "
+            INSERT INTO validation_flags (internal_id, country_code, source, flag_type, old_value, new_value)
+            SELECT nf.internal_id, '$CC', 'osm_diff', 'name_changed', nf.name, s.name
+            FROM natural_feature_stage s
+            JOIN natural_feature nf ON nf.osm_id = s.osm_id
+            WHERE s.name IS DISTINCT FROM nf.name
+              AND s.name IS NOT NULL AND nf.name IS NOT NULL;"
         psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
             "INSERT INTO natural_feature SELECT * FROM natural_feature_stage ON CONFLICT (osm_id) DO NOTHING;
              DROP TABLE natural_feature_stage;"
@@ -139,6 +161,38 @@ for CC in "$@"; do
              DROP TABLE alias_osm_stage;"
     fi
     rm -f "$AO_SQL"
+
+    echo "Running name diff detection for $CC..."
+    psql -h "$HOST" -p "$PORT" -U "$USER" -d gis <<EOF
+WITH new_data AS (
+    SELECT osm_id, name, internal_id FROM city   WHERE country_code = '${CC}'
+    UNION ALL
+    SELECT osm_id, name, internal_id FROM state  WHERE country_code = '${CC}'
+    UNION ALL
+    SELECT osm_id, name, internal_id FROM street WHERE country_code = '${CC}'
+)
+INSERT INTO validation_flags (internal_id, country_code, source, flag_type, old_value, new_value)
+SELECT
+    n.internal_id,
+    '${CC}',
+    'osm_diff',
+    CASE
+        WHEN n.name IS NULL OR n.name = '' THEN 'name_deleted'
+        WHEN p.name IS NULL OR p.name = '' THEN 'name_added'
+        ELSE 'name_changed'
+    END,
+    p.name,
+    n.name
+FROM _prev_names_${CC_LOWER} p
+JOIN new_data n USING (osm_id)
+WHERE p.name IS DISTINCT FROM n.name;
+
+DROP TABLE _prev_names_${CC_LOWER};
+
+SELECT COUNT(*) || ' name changes flagged for ${CC}'
+FROM validation_flags
+WHERE country_code = '${CC}' AND detected_at > now() - interval '1 hour';
+EOF
 
     echo "Row counts after $CC restore:"
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
