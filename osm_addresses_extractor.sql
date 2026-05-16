@@ -23,6 +23,7 @@ SET max_parallel_workers_per_gather = 4;
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS hstore;
 CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;
 
 -- ─── Schema — no PKs, no FKs, no secondary indexes ───────────────────────────
 -- UNLOGGED TABLE IF NOT EXISTS: created UNLOGGED on a fresh Docker container
@@ -163,6 +164,17 @@ CREATE UNLOGGED TABLE IF NOT EXISTS building (
     source_ref   text,
     updated_at   timestamptz NOT NULL DEFAULT now(),
     deleted_at   timestamptz
+);
+
+CREATE UNLOGGED TABLE IF NOT EXISTS validation_flags (
+    id           BIGSERIAL   PRIMARY KEY,
+    internal_id  BIGINT      NOT NULL,
+    country_code CHAR(2)     NOT NULL,
+    source       TEXT        NOT NULL,
+    flag_type    TEXT        NOT NULL,
+    old_value    TEXT,
+    new_value    TEXT,
+    detected_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ─── Bulk load: disable triggers ─────────────────────────────────────────────
@@ -574,9 +586,7 @@ UPDATE city SET validation_status = 1, validation_score = 0.5
 WHERE validation_status = 0
   AND NOT EXISTS (SELECT 1 FROM street WHERE street.city_osm_id = city.osm_id);
 
--- Drop wikipedia tables — used only for importance, not included in the dump.
-DROP TABLE IF EXISTS wikipedia_article;
-DROP TABLE IF EXISTS wikipedia_redirect;
+-- wikipedia tables are dropped later, after Wikidata name validation uses them.
 
 -- ─── building ────────────────────────────────────────────────────────────────
 -- id = min(osm_id) across the cluster — globally unique, stable across dumps.
@@ -836,6 +846,42 @@ UPDATE natural_feature SET internal_id = t.internal_id
 FROM _ids_natural_feature t WHERE t.osm_id = natural_feature.osm_id;
 
 DROP TABLE _ids_natural_feature;
+
+-- ─── Wikidata name validation ─────────────────────────────────────────────────
+-- Compare city names against Wikipedia article titles using the pre-loaded
+-- wikimedia-importance dump (wikipedia_article.title = canonical city name).
+-- Flags cities where OSM name differs from the Wikidata-sourced title by more
+-- than 30% (levenshtein distance / max length). internal_id is available here
+-- because ID assignment ran above.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'wikipedia_article')
+       AND :'lang_primary' <> ''
+    THEN
+        INSERT INTO validation_flags
+            (internal_id, country_code, source, flag_type, old_value, new_value)
+        SELECT
+            c.internal_id,
+            c.country_code,
+            'wikidata',
+            'name_changed',
+            c.name,
+            w.title
+        FROM city c
+        JOIN wikipedia_article w
+            ON c.tags->'wikidata' = w.wd_page_title
+           AND w.language = :'lang_primary'
+        WHERE c.internal_id IS NOT NULL
+          AND c.name IS NOT NULL AND c.name <> ''
+          AND w.title IS NOT NULL AND w.title <> ''
+          AND levenshtein(lower(c.name), lower(w.title))
+              > greatest(length(c.name), length(w.title)) * 0.3;
+    END IF;
+END $$;
+
+-- Drop wikipedia tables — used only for importance and name validation.
+DROP TABLE IF EXISTS wikipedia_article;
+DROP TABLE IF EXISTS wikipedia_redirect;
 
 -- ─── Primary keys and final indexes ──────────────────────────────────────────
 ALTER TABLE street   ADD CONSTRAINT pk_street   PRIMARY KEY (id);

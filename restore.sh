@@ -163,6 +163,24 @@ EOF
     fi
     rm -f "$AO_SQL"
 
+    echo "Restoring validation_flags (append-only, new ids assigned)..."
+    VF_SQL="$(mktemp --suffix=.sql)"
+    pg_restore --data-only --table=validation_flags -f "$VF_SQL" "$DUMP_DIR" 2>/dev/null || true
+    if [ -s "$VF_SQL" ]; then
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+            "DROP TABLE IF EXISTS validation_flags_stage;
+             CREATE UNLOGGED TABLE validation_flags_stage (LIKE validation_flags);"
+        sed 's/COPY public\.validation_flags /COPY public.validation_flags_stage /' "$VF_SQL" | \
+            psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
+        psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+            "INSERT INTO validation_flags
+                 (internal_id, country_code, source, flag_type, old_value, new_value, detected_at)
+             SELECT internal_id, country_code, source, flag_type, old_value, new_value, detected_at
+             FROM validation_flags_stage;
+             DROP TABLE validation_flags_stage;"
+    fi
+    rm -f "$VF_SQL"
+
     echo "Running name diff detection for $CC..."
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis <<EOF
 WITH new_data AS (
