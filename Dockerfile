@@ -23,5 +23,6 @@ RUN mkdir imposm3 \
 
 COPY mapping.yaml /imposm3/mapping.yaml
 COPY osm_addresses_extractor.sql /osm_addresses_extractor.sql
+COPY validate.sql /validate.sql
 COPY extract.sh /extract.sh
 RUN chmod +x /extract.sh

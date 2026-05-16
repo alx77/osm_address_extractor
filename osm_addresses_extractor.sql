@@ -553,40 +553,8 @@ WHERE osm_id NOT IN (
 CREATE INDEX idx_natural_feature_way ON natural_feature USING gist (way);
 ANALYZE natural_feature;
 
--- ─── validation_status / validation_score ────────────────────────────────────
--- status: 0=ok  1=suspect  2=rejected
--- Rules (worst wins):
---   2: name has no alphabetic characters
---   1: name shorter than 3 chars, or contains control characters
---   1: city has no streets (ghost towns, mapping gaps, import errors)
-DO $$
-DECLARE
-    name_rules TEXT := $r$
-        CASE
-            WHEN NOT (name ~ '[[:alpha:]]') THEN 2
-            WHEN LENGTH(name) < 3 OR name ~ E'[\\x01-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]' THEN 1
-            ELSE 0
-        END
-    $r$;
-    score_rules TEXT := $r$
-        CASE
-            WHEN NOT (name ~ '[[:alpha:]]') THEN 0.0
-            WHEN LENGTH(name) < 3 OR name ~ E'[\\x01-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]' THEN 0.5
-            ELSE 1.0
-        END
-    $r$;
-BEGIN
-    EXECUTE 'UPDATE state          SET validation_status = ' || name_rules || ', validation_score = ' || score_rules;
-    EXECUTE 'UPDATE city           SET validation_status = ' || name_rules || ', validation_score = ' || score_rules;
-    EXECUTE 'UPDATE street         SET validation_status = ' || name_rules || ', validation_score = ' || score_rules;
-    EXECUTE 'UPDATE natural_feature SET validation_status = ' || name_rules || ', validation_score = ' || score_rules;
-END $$;
-
-UPDATE city SET validation_status = 1, validation_score = 0.5
-WHERE validation_status = 0
-  AND NOT EXISTS (SELECT 1 FROM street WHERE street.city_osm_id = city.osm_id);
-
--- wikipedia tables are dropped later, after Wikidata name validation uses them.
+-- wikipedia tables are kept alive for validate.sql (Wikidata name comparison).
+-- Dropped there, or by extract.sh when SKIP_VALIDATION=1.
 
 -- ─── building ────────────────────────────────────────────────────────────────
 -- id = min(osm_id) across the cluster — globally unique, stable across dumps.
@@ -846,42 +814,6 @@ UPDATE natural_feature SET internal_id = t.internal_id
 FROM _ids_natural_feature t WHERE t.osm_id = natural_feature.osm_id;
 
 DROP TABLE _ids_natural_feature;
-
--- ─── Wikidata name validation ─────────────────────────────────────────────────
--- Compare city names against Wikipedia article titles using the pre-loaded
--- wikimedia-importance dump (wikipedia_article.title = canonical city name).
--- Flags cities where OSM name differs from the Wikidata-sourced title by more
--- than 30% (levenshtein distance / max length). internal_id is available here
--- because ID assignment ran above.
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'wikipedia_article')
-       AND :'lang_primary' <> ''
-    THEN
-        INSERT INTO validation_flags
-            (internal_id, country_code, source, flag_type, old_value, new_value)
-        SELECT
-            c.internal_id,
-            c.country_code,
-            'wikidata',
-            'name_changed',
-            c.name,
-            w.title
-        FROM city c
-        JOIN wikipedia_article w
-            ON c.tags->'wikidata' = w.wd_page_title
-           AND w.language = :'lang_primary'
-        WHERE c.internal_id IS NOT NULL
-          AND c.name IS NOT NULL AND c.name <> ''
-          AND w.title IS NOT NULL AND w.title <> ''
-          AND levenshtein(lower(c.name), lower(w.title))
-              > greatest(length(c.name), length(w.title)) * 0.3;
-    END IF;
-END $$;
-
--- Drop wikipedia tables — used only for importance and name validation.
-DROP TABLE IF EXISTS wikipedia_article;
-DROP TABLE IF EXISTS wikipedia_redirect;
 
 -- ─── Primary keys and final indexes ──────────────────────────────────────────
 ALTER TABLE street   ADD CONSTRAINT pk_street   PRIMARY KEY (id);

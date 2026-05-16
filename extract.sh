@@ -82,8 +82,41 @@ time /imposm3/imposm import \
 rm -f "$FILTERED"
 
 ID_OFFSET="${3:-0}"
+
+case "$2" in
+    AL) LANG_PRIMARY="sq" ;; AD) LANG_PRIMARY="ca" ;; AT) LANG_PRIMARY="de" ;;
+    BY) LANG_PRIMARY="be" ;; BE) LANG_PRIMARY="fr" ;; BG) LANG_PRIMARY="bg" ;;
+    HR) LANG_PRIMARY="hr" ;; CZ) LANG_PRIMARY="cs" ;; DK) LANG_PRIMARY="da" ;;
+    FI) LANG_PRIMARY="fi" ;; FR) LANG_PRIMARY="fr" ;; GE) LANG_PRIMARY="ka" ;;
+    DE) LANG_PRIMARY="de" ;; GB) LANG_PRIMARY="en" ;; GR) LANG_PRIMARY="el" ;;
+    HU) LANG_PRIMARY="hu" ;; IL) LANG_PRIMARY="he" ;; IT) LANG_PRIMARY="it" ;;
+    LV) LANG_PRIMARY="lv" ;; LT) LANG_PRIMARY="lt" ;; LU) LANG_PRIMARY="fr" ;;
+    MD) LANG_PRIMARY="ro" ;; MC) LANG_PRIMARY="fr" ;; ME) LANG_PRIMARY="sr" ;;
+    NL) LANG_PRIMARY="nl" ;; NO) LANG_PRIMARY="no" ;; PL) LANG_PRIMARY="pl" ;;
+    PT) LANG_PRIMARY="pt" ;; RO) LANG_PRIMARY="ro" ;; RU) LANG_PRIMARY="ru" ;;
+    RS) LANG_PRIMARY="sr" ;; SK) LANG_PRIMARY="sk" ;; SI) LANG_PRIMARY="sl" ;;
+    ES) LANG_PRIMARY="es" ;; SE) LANG_PRIMARY="sv" ;; CH) LANG_PRIMARY="de" ;;
+    TR) LANG_PRIMARY="tr" ;; UA) LANG_PRIMARY="uk" ;; *)  LANG_PRIMARY=""   ;;
+esac
+
 echo "extracting addresses for $2 (id_offset=$ID_OFFSET)..."
-time psql -U postgres -d gis -v id_offset="$ID_OFFSET" -v country_code="$2" -f ./osm_addresses_extractor.sql
+time psql -U postgres -d gis \
+    -v id_offset="$ID_OFFSET" \
+    -v country_code="$2" \
+    -v lang_primary="$LANG_PRIMARY" \
+    -f ./osm_addresses_extractor.sql
+
+if [ "${SKIP_VALIDATION:-0}" = "1" ]; then
+    echo "skipping validation (SKIP_VALIDATION=1)..."
+    psql -U postgres -d gis \
+        -c "DROP TABLE IF EXISTS wikipedia_article; DROP TABLE IF EXISTS wikipedia_redirect;"
+else
+    echo "running validation for $2..."
+    time psql -U postgres -d gis \
+        -v lang_primary="$LANG_PRIMARY" \
+        -v country_code="$2" \
+        -f ./validate.sql
+fi
 
 echo "exporting results to /results/osm_addresses_$2..."
 rm -rf "/results/osm_addresses_$2"
