@@ -102,6 +102,10 @@ BEGIN
                 point::geography,
                 10000
             )
+              AND feature_code IN (
+                'PPL','PPLA','PPLA2','PPLA3','PPLA4','PPLC','PPLX','PPLS',
+                'ADM1','ADM2'
+              )
             ORDER BY point <-> ST_SetSRID(ST_MakePoint(c.lon, c.lat), 4326)
             LIMIT 1
         ) g ON true

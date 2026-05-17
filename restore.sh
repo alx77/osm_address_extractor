@@ -95,6 +95,7 @@ EOF
         | grep -v 'TABLE DATA public natural_feature' \
         | grep -v 'TABLE DATA public alias_osm' \
         | grep -v 'TABLE DATA public object_registry' \
+        | grep -v 'TABLE DATA public validation_flags' \
         > "$TOC_FILE"
 
     pg_restore --data-only --disable-triggers \
@@ -163,7 +164,7 @@ EOF
     fi
     rm -f "$AO_SQL"
 
-    echo "Restoring validation_flags (append-only, new ids assigned)..."
+    echo "Restoring validation_flags (replace for $CC)..."
     VF_SQL="$(mktemp --suffix=.sql)"
     pg_restore --data-only --table=validation_flags -f "$VF_SQL" "$DUMP_DIR" 2>/dev/null || true
     if [ -s "$VF_SQL" ]; then
@@ -173,7 +174,8 @@ EOF
         sed 's/COPY public\.validation_flags /COPY public.validation_flags_stage /' "$VF_SQL" | \
             psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
         psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
-            "INSERT INTO validation_flags
+            "DELETE FROM validation_flags WHERE country_code = '${CC}';
+             INSERT INTO validation_flags
                  (internal_id, country_code, source, flag_type, old_value, new_value, detected_at)
              SELECT internal_id, country_code, source, flag_type, old_value, new_value, detected_at
              FROM validation_flags_stage;
