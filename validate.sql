@@ -74,3 +74,42 @@ END $$;
 -- Drop wikipedia tables — kept alive from main script for the comparison above.
 DROP TABLE IF EXISTS wikipedia_article;
 DROP TABLE IF EXISTS wikipedia_redirect;
+
+-- ─── GeoNames name validation ─────────────────────────────────────────────────
+-- For each city, find the nearest GeoNames populated place or admin area within
+-- 10 km and flag if the names diverge by more than 35%.
+-- Catches vandalism that slipped past the Wikidata check (small cities with no
+-- Wikidata entry often have a GeoNames record). Skipped when the table is absent
+-- (download failed or SKIP_VALIDATION=1).
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'geonames') THEN
+        INSERT INTO validation_flags
+            (internal_id, country_code, source, flag_type, old_value, new_value)
+        SELECT
+            c.internal_id,
+            c.country_code,
+            'geonames',
+            'name_changed',
+            c.name,
+            g.name
+        FROM city c
+        JOIN LATERAL (
+            SELECT name
+            FROM geonames
+            WHERE ST_DWithin(
+                ST_SetSRID(ST_MakePoint(c.lon, c.lat), 4326)::geography,
+                point::geography,
+                10000
+            )
+            ORDER BY point <-> ST_SetSRID(ST_MakePoint(c.lon, c.lat), 4326)
+            LIMIT 1
+        ) g ON true
+        WHERE c.internal_id IS NOT NULL
+          AND c.name  IS NOT NULL AND c.name  <> ''
+          AND levenshtein(lower(c.name), lower(g.name))
+              > greatest(length(c.name), length(g.name)) * 0.35;
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS geonames;

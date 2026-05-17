@@ -8,6 +8,7 @@ RUN set -x \
  ca-certificates \
  curl \
  wget \
+ unzip \
  procps \
  postgresql-18-postgis-3 \
  postgresql-18-postgis-3-scripts \
