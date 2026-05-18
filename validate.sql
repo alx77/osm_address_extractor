@@ -112,7 +112,7 @@ BEGIN
         WHERE c.internal_id IS NOT NULL
           AND c.name  IS NOT NULL AND c.name  <> ''
           AND (c.place IN ('city','town','village','hamlet','municipality')
-               OR (c.admin_level IS NOT NULL AND c.admin_level::int <= 7))
+               OR (c.admin_level IS NOT NULL AND c.admin_level::int <= 5))
           AND NOT lower(c.name) LIKE '%' || lower(g.name) || '%'
           AND levenshtein(lower(c.name), lower(g.name))
               > greatest(length(c.name), length(g.name)) * 0.35;
