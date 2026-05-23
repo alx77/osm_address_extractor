@@ -105,6 +105,13 @@ EOF
 
     rm -f "$TOC_FILE"
 
+    echo "Removing rejected (validation_status=2) objects for $CC..."
+    psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c "
+        DELETE FROM city            WHERE country_code = '${CC}' AND validation_status = 2;
+        DELETE FROM state           WHERE country_code = '${CC}' AND validation_status = 2;
+        DELETE FROM street          WHERE country_code = '${CC}' AND validation_status = 2;
+        DELETE FROM natural_feature WHERE country_code = '${CC}' AND validation_status = 2;"
+
     # Restore object_registry first — natural_feature has a FK on it.
     echo "Restoring object_registry (ON CONFLICT DO NOTHING)..."
     OR_SQL="$(mktemp --suffix=.sql)"
