@@ -514,15 +514,20 @@ SET importance = c.importance
 FROM city c
 WHERE c.osm_id = s.city_osm_id;
 
--- Step 4: raise street importance to state floor (state * 0.8).
+-- Step 4: raise street importance to state floor (MAX(city.importance in state) * 0.8).
 -- Streets in high-importance states (Berlin, Hamburg) should not rank below
 -- streets in obscure cities that happen to have high borough-level importance.
 UPDATE street s
-SET importance = GREATEST(s.importance, st.importance * 0.8)
+SET importance = GREATEST(s.importance, sf.state_imp * 0.8)
 FROM city c
-JOIN state st ON st.osm_id = c.state_osm_id
+JOIN (
+    SELECT state_osm_id, MAX(importance) AS state_imp
+    FROM city
+    WHERE state_osm_id IS NOT NULL
+    GROUP BY state_osm_id
+) sf ON sf.state_osm_id = c.state_osm_id
 WHERE c.osm_id = s.city_osm_id
-  AND st.importance * 0.8 > s.importance;
+  AND sf.state_imp * 0.8 > s.importance;
 
 -- Spatial indexes for the natural_feature → state/city containment joins.
 CREATE INDEX idx_state_way ON state USING gist (way);
