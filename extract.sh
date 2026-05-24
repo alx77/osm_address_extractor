@@ -126,6 +126,7 @@ time osmium tags-filter "$FILENAME" \
     wa/building \
     nwr/place \
     wa/boundary=administrative \
+    nwr/boundary=postal_code \
     w/highway \
     w/railway=rail,tram,light_rail,subway,narrow_gauge,preserved,funicular,monorail,disused \
     w/man_made=pier,groyne \

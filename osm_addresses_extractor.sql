@@ -104,6 +104,17 @@ CREATE UNLOGGED TABLE IF NOT EXISTS city (
     deleted_at        timestamptz
 );
 
+CREATE UNLOGGED TABLE IF NOT EXISTS postcode (
+    osm_id       bigint,
+    internal_id  bigint,
+    postal_code  text NOT NULL,
+    way          geometry(Geometry, 4326),
+    lon          float8,
+    lat          float8,
+    country_code text,
+    state_osm_id bigint
+);
+
 CREATE UNLOGGED TABLE IF NOT EXISTS natural_feature (
     osm_id            bigint,
     internal_id       bigint,
@@ -360,6 +371,21 @@ WHERE p.type IN ('city', 'town', 'village', 'hamlet')
 ORDER BY p.osm_id, state.osm_id;
 
 ANALYZE city;
+
+-- ─── postcode ────────────────────────────────────────────────────────────────
+INSERT INTO postcode (osm_id, postal_code, way, lon, lat, country_code, state_osm_id)
+SELECT p.osm_id,
+       COALESCE(p.postal_code, p.tags->>'postal_code') AS postal_code,
+       ST_Transform(p.way, 4326)                       AS way,
+       ST_X(ST_Transform(ST_Centroid(p.way), 4326))    AS lon,
+       ST_Y(ST_Transform(ST_Centroid(p.way), 4326))    AS lat,
+       :'country_code',
+       s.osm_id                                        AS state_osm_id
+FROM import.osm_postal_codes p
+JOIN state s ON ST_Contains(s.way, ST_Transform(ST_Centroid(p.way), 4326))
+WHERE COALESCE(p.postal_code, p.tags->>'postal_code') IS NOT NULL;
+
+ANALYZE postcode;
 
 -- ─── district_osm_id: link sub-district cities to their rayon/Landkreis/powiat ─
 -- Only for cities at admin_level > 7 (or no explicit admin_level but place tag).
@@ -920,6 +946,23 @@ UPDATE natural_feature SET internal_id = t.internal_id
 FROM _ids_natural_feature t WHERE t.osm_id = natural_feature.osm_id;
 
 DROP TABLE _ids_natural_feature;
+
+-- postcodes
+CREATE TEMP TABLE _ids_postcode AS
+SELECT osm_id, nextval('object_registry_internal_id_seq') AS internal_id
+FROM (SELECT osm_id, lon, lat FROM postcode WHERE osm_id IS NOT NULL
+      ORDER BY ST_GeoHash(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 7)) s;
+
+INSERT INTO object_registry (internal_id, object_type)
+SELECT internal_id, 'postcode' FROM _ids_postcode;
+
+INSERT INTO alias_osm (osm_id, internal_id)
+SELECT osm_id, internal_id FROM _ids_postcode ON CONFLICT DO NOTHING;
+
+UPDATE postcode SET internal_id = t.internal_id
+FROM _ids_postcode t WHERE t.osm_id = postcode.osm_id;
+
+DROP TABLE _ids_postcode;
 
 -- ─── Primary keys and final indexes ──────────────────────────────────────────
 ALTER TABLE street   ADD CONSTRAINT pk_street   PRIMARY KEY (id);

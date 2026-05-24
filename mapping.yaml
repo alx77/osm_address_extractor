@@ -111,6 +111,27 @@ tables:
       - town
       - village
       - hamlet
+  postal_codes:
+    columns:
+    - type: id
+      name: osm_id
+      key:
+    - type: geometry
+      name: way
+      key:
+    - type: string
+      name: postal_code
+      key: postal_code
+    - type: hstore_tags
+      name: tags
+      key:
+    type: polygon
+    filters:
+      require:
+        boundary: [ postal_code ]
+    mapping:
+      boundary:
+      - postal_code
   admin:
     columns:
     - type: id
