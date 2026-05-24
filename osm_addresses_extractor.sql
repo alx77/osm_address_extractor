@@ -519,8 +519,9 @@ WHERE c.osm_id = s.city_osm_id;
 -- streets in obscure cities that happen to have high borough-level importance.
 UPDATE street s
 SET importance = GREATEST(s.importance, st.importance * 0.8)
-FROM state st
-WHERE st.osm_id = s.state_osm_id
+FROM city c
+JOIN state st ON st.osm_id = c.state_osm_id
+WHERE c.osm_id = s.city_osm_id
   AND st.importance * 0.8 > s.importance;
 
 -- Spatial indexes for the natural_feature → state/city containment joins.
