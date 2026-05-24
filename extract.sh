@@ -124,7 +124,7 @@ time osmium tags-filter "$FILENAME" \
     r/type=associatedStreet \
     r/type=street \
     wa/building \
-    nw/place \
+    nwr/place \
     wa/boundary=administrative \
     w/highway \
     w/railway=rail,tram,light_rail,subway,narrow_gauge,preserved,funicular,monorail,disused \
