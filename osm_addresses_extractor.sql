@@ -313,6 +313,7 @@ FROM import.osm_place_areas p
 JOIN state ON ST_Contains(state.way, ST_Transform(ST_Centroid(p.way), 4326))
 WHERE p.type IN ('city', 'town', 'village', 'hamlet')
   AND p.name IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM city c WHERE c.osm_id = p.osm_id)
 ORDER BY p.osm_id, state.osm_id;
 
 ANALYZE city;
