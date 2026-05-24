@@ -84,6 +84,7 @@ EOF
             DELETE FROM city            WHERE country_code = '$CC';
             DELETE FROM state           WHERE country_code = '$CC';
             DELETE FROM country         WHERE country_code = '$CC';
+            DELETE FROM postcode        WHERE country_code = '$CC';
           END IF;
         END \$\$;"
 
@@ -229,7 +230,8 @@ EOF
          UNION ALL SELECT 'city',           COUNT(*) FROM city
          UNION ALL SELECT 'street',         COUNT(*) FROM street
          UNION ALL SELECT 'building',       COUNT(*) FROM building
-         UNION ALL SELECT 'natural_feature',COUNT(*) FROM natural_feature;"
+         UNION ALL SELECT 'natural_feature',COUNT(*) FROM natural_feature
+         UNION ALL SELECT 'postcode',       COUNT(*) FROM postcode;"
 
     echo "=== $CC restore done ==="
 done
