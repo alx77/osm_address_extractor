@@ -84,6 +84,33 @@ tables:
       - hamlet
       - suburb
       - locality
+  place_areas:
+    columns:
+    - type: id
+      name: osm_id
+      key:
+    - type: geometry
+      name: way
+      key:
+    - type: string
+      name: name
+      key: name
+    - type: mapping_value
+      name: type
+      key:
+    - type: hstore_tags
+      name: tags
+      key:
+    type: polygon
+    filters:
+      require:
+        name: [ __any__ ]
+    mapping:
+      place:
+      - city
+      - town
+      - village
+      - hamlet
   admin:
     columns:
     - type: id

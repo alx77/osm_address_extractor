@@ -289,6 +289,77 @@ CREATE INDEX idx_city_way_geo    ON city USING gist (way);
 CREATE INDEX idx_city_way_origin ON city USING gist (way_origin);
 ANALYZE city;
 
+-- ─── city: place polygons without boundary=administrative ────────────────────
+-- Relations/ways tagged place=city/town/village/hamlet but without
+-- boundary=administrative are missed by the osm_admin import. Examples:
+-- Краматорськ, Ясногірка (Ukraine) — real multipolygon boundaries, just tagged
+-- differently. Import them directly with their real geometry.
+INSERT INTO city (osm_id, name, place, postal_code, tags, admin_level,
+                  state_osm_id, way_origin, way, lon, lat, country_code)
+SELECT DISTINCT ON (p.osm_id)
+    p.osm_id,
+    p.name,
+    p.type                                                       AS place,
+    p.tags->'postal_code'                                        AS postal_code,
+    p.tags,
+    (p.tags->'admin_level')::int                                 AS admin_level,
+    state.osm_id                                                 AS state_osm_id,
+    ST_Transform(p.way, 3857)                                    AS way_origin,
+    ST_Transform(p.way, 4326)                                    AS way,
+    ST_X(ST_Transform(ST_Centroid(p.way), 4326))                 AS lon,
+    ST_Y(ST_Transform(ST_Centroid(p.way), 4326))                 AS lat,
+    :'country_code'                                              AS country_code
+FROM import.osm_place_areas p
+JOIN state ON ST_Contains(state.way, ST_Transform(ST_Centroid(p.way), 4326))
+WHERE p.type IN ('city', 'town', 'village', 'hamlet')
+  AND p.name IS NOT NULL
+ORDER BY p.osm_id, state.osm_id;
+
+ANALYZE city;
+
+-- ─── city: backfill point nodes that have no polygon in OSM ──────────────────
+-- Some cities/towns/villages exist only as place=* point nodes with no admin
+-- boundary polygon (e.g. Мерефа in Ukraine). Insert them using the smallest
+-- enclosing polygon already in `city` (typically the hromada / Gemeinde) as
+-- the boundary. Streets in surrounding villages that have their own place node
+-- will still be correctly attributed to those villages via the place_order
+-- priority in the fragments query (DISTINCT ON place_order ASC).
+-- Skipped when a same-level city polygon already covers the point (place IS NOT NULL).
+INSERT INTO city (osm_id, name, place, postal_code, tags, admin_level,
+                  state_osm_id, way_origin, way, lon, lat, country_code)
+SELECT DISTINCT ON (p.osm_id)
+    p.osm_id,
+    p.name,
+    p.type                                                           AS place,
+    p.tags->'postal_code'                                            AS postal_code,
+    p.tags,
+    (p.tags->'admin_level')::int                                     AS admin_level,
+    state.osm_id                                                     AS state_osm_id,
+    enclosing.way_origin,
+    enclosing.way,
+    ST_X(ST_Transform(p.way, 4326))                                  AS lon,
+    ST_Y(ST_Transform(p.way, 4326))                                  AS lat,
+    :'country_code'                                                  AS country_code
+FROM import.osm_places p
+JOIN state ON ST_Contains(state.way, ST_Transform(p.way, 4326))
+JOIN LATERAL (
+    SELECT c.way_origin, c.way
+    FROM city c
+    WHERE ST_Contains(c.way_origin, p.way)
+    ORDER BY ST_Area(c.way_origin) ASC
+    LIMIT 1
+) enclosing ON true
+WHERE p.type IN ('city', 'town', 'village', 'hamlet')
+  AND p.name IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM city c
+      WHERE ST_Contains(c.way_origin, p.way)
+        AND c.place IS NOT NULL
+  )
+ORDER BY p.osm_id, state.osm_id;
+
+ANALYZE city;
+
 -- ─── district_osm_id: link sub-district cities to their rayon/Landkreis/powiat ─
 -- Only for cities at admin_level > 7 (or no explicit admin_level but place tag).
 -- Cities that ARE districts (admin_level <= 7) are skipped.
@@ -442,6 +513,15 @@ SET importance = c.importance
 FROM city c
 WHERE c.osm_id = s.city_osm_id;
 
+-- Step 4: raise street importance to state floor (state * 0.8).
+-- Streets in high-importance states (Berlin, Hamburg) should not rank below
+-- streets in obscure cities that happen to have high borough-level importance.
+UPDATE street s
+SET importance = GREATEST(s.importance, st.importance * 0.8)
+FROM state st
+WHERE st.osm_id = s.state_osm_id
+  AND st.importance * 0.8 > s.importance;
+
 -- Spatial indexes for the natural_feature → state/city containment joins.
 CREATE INDEX idx_state_way ON state USING gist (way);
 CREATE INDEX idx_city_way  ON city  USING gist (way);
@@ -496,18 +576,30 @@ LEFT JOIN city  c   ON ST_Contains(c.way, ST_SetSRID(ST_MakePoint(r.lon, r.lat),
 UPDATE natural_feature
 SET country_code = :'country_code';
 
--- importance: type-based fallback
+-- importance: set BEFORE deduplication so geometry is still intact.
+-- Points (peaks, volcanoes, glaciers) — individual geometry used directly.
+-- Area features (lakes, islands) — area-based.
+-- Rivers/canals — total length computed inside the dedup CTE below.
 UPDATE natural_feature
-SET importance = CASE type
-    WHEN 'river'   THEN 0.50
-    WHEN 'water'   THEN 0.40
-    WHEN 'island'  THEN 0.40
-    WHEN 'canal'   THEN 0.30
-    WHEN 'peak'    THEN 0.35
-    WHEN 'volcano' THEN 0.45
-    WHEN 'glacier' THEN 0.35
-    ELSE                0.20
-END;
+SET importance = CASE
+    WHEN type = 'water' THEN
+        LEAST(1.0, 0.25 + LN(GREATEST(1.0,
+            SQRT(ST_Area(way::geography) / 1000000.0)
+        )) / 15.0)
+    WHEN type = 'island' THEN
+        LEAST(0.9, 0.25 + LN(GREATEST(1.0,
+            SQRT(ST_Area(way::geography) / 1000000.0)
+        )) / 15.0)
+    WHEN type = 'peak' THEN
+        LEAST(0.9, 0.2 + COALESCE(
+            NULLIF(regexp_replace(tags->'ele', '[^0-9.]', '', 'g'), '')::float,
+            500.0
+        ) / 10000.0)
+    WHEN type = 'volcano' THEN 0.55
+    WHEN type = 'glacier' THEN 0.40
+    ELSE                       0.20
+END
+WHERE type NOT IN ('river', 'canal');
 
 -- override with Wikipedia/Wikidata importance where available
 DO $$
@@ -521,16 +613,23 @@ BEGIN
     END IF;
 END $$;
 
--- Deduplicate: rivers/canals/lakes are split into many OSM way segments with
--- different osm_ids. Merge segments within the same (name, type, state_osm_id,
--- country_code) group: update the representative row with the true centroid on
--- the merged geometry, then delete the rest.
+-- Deduplicate: rivers/canals/lakes are split into many OSM way segments.
+-- Rivers: importance = total length of merged segments (computed here before way→point).
+--   Rhein ~800km → 0.3 + ln(800)/15 ≈ 0.75   Elbe ~1100km → ≈ 0.78
+--   small stream 5km  → 0.3 + ln(5)/15  ≈ 0.41
+-- Other types: keep max(importance) already set above.
 WITH groups AS (
     SELECT
-        min(osm_id)                           AS rep_osm_id,
+        min(osm_id)                        AS rep_osm_id,
         name, type, state_osm_id, country_code,
-        ST_PointOnSurface(ST_Collect(way))    AS center,
-        max(importance)                        AS best_importance
+        ST_PointOnSurface(ST_Collect(way)) AS center,
+        CASE
+            WHEN type IN ('river', 'canal') THEN
+                LEAST(1.2, 0.3 + LN(GREATEST(1.0,
+                    ST_Length(ST_Collect(way)::geography) / 1000.0
+                )) / 15.0)
+            ELSE max(importance)
+        END                                AS best_importance
     FROM natural_feature
     GROUP BY name, type, state_osm_id, country_code
 )
