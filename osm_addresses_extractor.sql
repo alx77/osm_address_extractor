@@ -816,15 +816,6 @@ WHERE s.tags->'addr:postcode' IS NOT NULL
 -- Used when boundary=postal_code relations are absent in OSM (e.g. Ukraine).
 -- Concave hull (0.99) traces the actual cluster shape; NOT EXISTS skips zones
 -- already covered by real OSM postal_code polygons.
-CREATE OR REPLACE FUNCTION safe_concave_hull(geom geometry, target float8)
-RETURNS geometry LANGUAGE plpgsql AS $$
-BEGIN
-    RETURN ST_ConcaveHull(geom, target);
-EXCEPTION WHEN OTHERS THEN
-    RETURN ST_ConvexHull(geom);
-END;
-$$;
-
 WITH missing AS (
     SELECT DISTINCT b.postcode FROM building b
     WHERE b.postcode IS NOT NULL AND b.postcode != ''
@@ -834,7 +825,7 @@ WITH missing AS (
 INSERT INTO postcode (postal_code, way, lon, lat, country_code, state_osm_id)
 SELECT b.postcode,
        ST_Transform(
-           safe_concave_hull(ST_Collect(ST_Transform(b.way, 3857)), 0.99),
+           ST_ConvexHull(ST_Collect(ST_Transform(b.way, 3857))),
            4326
        )                                                             AS way,
        ST_X(ST_Centroid(ST_Collect(b.way)))                         AS lon,
