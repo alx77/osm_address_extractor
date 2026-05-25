@@ -383,7 +383,7 @@ SELECT p.osm_id,
        s.osm_id                                        AS state_osm_id
 FROM import.osm_postal_codes p
 JOIN state s ON ST_Contains(s.way, ST_Transform(ST_Centroid(p.way), 4326))
-WHERE COALESCE(p.postal_code, p.tags->>'postal_code') IS NOT NULL;
+WHERE COALESCE(p.postal_code, p.tags->'postal_code') IS NOT NULL;
 
 ANALYZE postcode;
 
@@ -811,6 +811,29 @@ SET postcodes = ARRAY[s.tags->'addr:postcode'] || COALESCE(s.postcodes, '{}')
 WHERE s.tags->'addr:postcode' IS NOT NULL
   AND s.tags->'addr:postcode' <> ''
   AND NOT (COALESCE(s.postcodes, '{}') @> ARRAY[s.tags->'addr:postcode']);
+
+-- ─── postcode: synthetic polygons from buildings (fallback) ─────────────────
+-- Used when boundary=postal_code relations are absent in OSM (e.g. Ukraine).
+-- Concave hull (0.99) traces the actual cluster shape; NOT EXISTS skips zones
+-- already covered by real OSM postal_code polygons.
+INSERT INTO postcode (postal_code, way, lon, lat, country_code, state_osm_id)
+SELECT b.postcode,
+       ST_Transform(
+           ST_ConcaveHull(ST_Collect(ST_Transform(b.way, 3857)), 0.99),
+           4326
+       )                                                             AS way,
+       ST_X(ST_Centroid(ST_Collect(b.way)))                         AS lon,
+       ST_Y(ST_Centroid(ST_Collect(b.way)))                         AS lat,
+       :'country_code',
+       s.osm_id                                                      AS state_osm_id
+FROM building b
+JOIN state s ON ST_Contains(s.way, ST_SetSRID(ST_MakePoint(b.lon, b.lat), 4326))
+WHERE b.postcode IS NOT NULL AND b.postcode != ''
+  AND NOT EXISTS (SELECT 1 FROM postcode p WHERE p.postal_code = b.postcode
+                    AND p.country_code = :'country_code')
+GROUP BY b.postcode, s.osm_id;
+
+ANALYZE postcode;
 
 -- ─── Drop before compact ID assignment ───────────────────────────────────────
 -- way_3857: temp column used only for the building spatial join.
