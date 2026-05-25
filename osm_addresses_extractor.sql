@@ -375,7 +375,7 @@ ANALYZE city;
 -- ─── postcode ────────────────────────────────────────────────────────────────
 INSERT INTO postcode (osm_id, postal_code, way, lon, lat, country_code, state_osm_id)
 SELECT p.osm_id,
-       COALESCE(p.postal_code, p.tags->>'postal_code') AS postal_code,
+       COALESCE(p.postal_code, p.tags->'postal_code') AS postal_code,
        ST_Transform(p.way, 4326)                       AS way,
        ST_X(ST_Transform(ST_Centroid(p.way), 4326))    AS lon,
        ST_Y(ST_Transform(ST_Centroid(p.way), 4326))    AS lat,
