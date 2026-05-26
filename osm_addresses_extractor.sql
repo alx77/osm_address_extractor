@@ -826,7 +826,7 @@ SELECT b.postcode,
 FROM building b
 JOIN state s ON ST_Contains(s.way, ST_SetSRID(ST_MakePoint(b.lon, b.lat), 4326))
 WHERE b.postcode IS NOT NULL AND b.postcode != ''
-  AND (SELECT COUNT(*) FROM postcode) = 0
+  AND (SELECT COUNT(*) FROM postcode) < 1000
 GROUP BY b.postcode, s.osm_id
 HAVING COUNT(*) >= 5;
 
