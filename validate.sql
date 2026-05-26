@@ -45,31 +45,30 @@ WHERE validation_status = 0
 -- wikimedia-importance dump. Flags cities where the OSM name differs from the
 -- canonical title by more than 30% (levenshtein / max length).
 -- Skipped when lang_primary is empty or wikipedia_article is unavailable.
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'wikipedia_article')
-       AND :'lang_primary' <> ''
-    THEN
-        INSERT INTO validation_flags
-            (internal_id, country_code, source, flag_type, old_value, new_value)
-        SELECT
-            c.internal_id,
-            c.country_code,
-            'wikidata',
-            'name_changed',
-            c.name,
-            w.title
-        FROM city c
-        JOIN wikipedia_article w
-            ON c.tags->'wikidata' = w.wd_page_title
-           AND w.language = :'lang_primary'
-        WHERE c.internal_id IS NOT NULL
-          AND c.name  IS NOT NULL AND c.name  <> ''
-          AND w.title IS NOT NULL AND w.title <> ''
-          AND levenshtein(lower(c.name), lower(w.title))
-              > greatest(length(c.name), length(w.title)) * 0.3;
-    END IF;
-END $$;
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.tables WHERE table_name = 'wikipedia_article'
+) AND :'lang_primary' <> '' AS wiki_ok \gset
+
+\if :wiki_ok
+INSERT INTO validation_flags
+    (internal_id, country_code, source, flag_type, old_value, new_value)
+SELECT
+    c.internal_id,
+    c.country_code,
+    'wikidata',
+    'name_changed',
+    c.name,
+    w.title
+FROM city c
+JOIN wikipedia_article w
+    ON c.tags->'wikidata' = w.wd_page_title
+   AND w.language = :'lang_primary'
+WHERE c.internal_id IS NOT NULL
+  AND c.name  IS NOT NULL AND c.name  <> ''
+  AND w.title IS NOT NULL AND w.title <> ''
+  AND levenshtein(lower(c.name), lower(w.title))
+      > greatest(length(c.name), length(w.title)) * 0.3;
+\endif
 
 -- Drop wikipedia tables — kept alive from main script for the comparison above.
 DROP TABLE IF EXISTS wikipedia_article;
