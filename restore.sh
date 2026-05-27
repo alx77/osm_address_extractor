@@ -63,6 +63,7 @@ EOF
 
     echo "Preparing partitions and cleaning existing $CC rows..."
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c "
+        SET session_replication_role = replica;
         DO \$\$ BEGIN
           -- building partition must be dropped before street (FK dependency)
           IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'building_${CC_LOWER}') THEN
@@ -86,7 +87,8 @@ EOF
             DELETE FROM country         WHERE country_code = '$CC';
             DELETE FROM postcode        WHERE country_code = '$CC';
           END IF;
-        END \$\$;"
+        END \$\$;
+        RESET session_replication_role;"
 
     # Build a filtered TOC list: exclude tables restored separately via ON CONFLICT DO NOTHING
     # (border objects share osm_ids / internal_ids across countries)
