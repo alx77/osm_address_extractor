@@ -78,15 +78,11 @@ EOF
         END \$\$;"
 
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c "
-        ALTER TABLE city    DISABLE TRIGGER ALL;
-        ALTER TABLE street  DISABLE TRIGGER ALL;
         DELETE FROM natural_feature WHERE country_code = '${CC}';
         DELETE FROM city            WHERE country_code = '${CC}';
         DELETE FROM state           WHERE country_code = '${CC}';
         DELETE FROM country         WHERE country_code = '${CC}';
-        DELETE FROM postcode        WHERE country_code = '${CC}';
-        ALTER TABLE city    ENABLE TRIGGER ALL;
-        ALTER TABLE street  ENABLE TRIGGER ALL;"
+        DELETE FROM postcode        WHERE country_code = '${CC}';"
 
     # Build a filtered TOC list: exclude tables restored separately via ON CONFLICT DO NOTHING
     # (border objects share osm_ids / internal_ids across countries)
