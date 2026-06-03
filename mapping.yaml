@@ -44,6 +44,9 @@ tables:
     - type: string
       name: addr:postcode
       key: addr:postcode
+    - type: string
+      name: addr:unit
+      key: addr:unit
     - type: mapping_value
       name: type
       key:
@@ -356,6 +359,9 @@ tables:
     - type: string
       name: addr:city
       key: addr:city
+    - type: string
+      name: addr:unit
+      key: addr:unit
     type: point
     mapping:
       addr:housenumber:

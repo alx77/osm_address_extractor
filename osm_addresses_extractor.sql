@@ -166,6 +166,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS building (
     street_id    integer,          -- FK → street.id (compact)
     osm_ids      bigint[],
     housenumber  text,
+    unit         text,
     postcode     text,
     way          geometry(Geometry, 4326),
     lon          float8,
@@ -701,12 +702,13 @@ ANALYZE natural_feature;
 -- adds millions of address nodes that would otherwise blow RAM as a CTE.
 CREATE TEMP TABLE buildings_unique AS
 SELECT DISTINCT ON (osm_id)
-    osm_id, housenumber, postcode, way, street_id
+    osm_id, housenumber, unit, postcode, way, street_id
 FROM (
     -- branch 2: building has addr:housenumber + addr:street tags (main branch)
     SELECT
         b.osm_id,
         b.housenumber,
+        b."addr:unit"    AS unit,
         b."addr:postcode" AS postcode,
         b.way,
         str.osm_id AS street_id
@@ -719,6 +721,7 @@ FROM (
     SELECT
         b.osm_id,
         b.housenumber,
+        b."addr:unit"    AS unit,
         COALESCE(b."addr:postcode", rel."addr:postcode"),
         b.way,
         str.osm_id
@@ -730,7 +733,8 @@ FROM (
     -- branch 4: address/entrance nodes with addr:street tag (common in DE for building entrances)
     SELECT
         h.osm_id,
-        h.type AS housenumber,
+        h.type           AS housenumber,
+        h."addr:unit"    AS unit,
         h."addr:postcode" AS postcode,
         h.way,
         str.osm_id AS street_id
@@ -747,14 +751,14 @@ ORDER BY osm_id;
 CREATE INDEX ON buildings_unique (housenumber, street_id);
 ANALYZE buildings_unique;
 
-INSERT INTO building (osm_id, osm_ids, way, street_id, housenumber, postcode, lon, lat)
+INSERT INTO building (osm_id, osm_ids, way, street_id, housenumber, unit, postcode, lon, lat)
 WITH building_clusters AS (
     SELECT
         ST_ClusterDBSCAN(way, eps := 100, minpoints := 1) OVER (
-            PARTITION BY housenumber, street_id
+            PARTITION BY housenumber, unit, street_id
             ORDER BY housenumber, street_id
         ) AS cluster_id,
-        osm_id, housenumber, postcode, way, street_id
+        osm_id, housenumber, unit, postcode, way, street_id
     FROM buildings_unique
 )
 , buildings_joined AS (
@@ -762,11 +766,12 @@ WITH building_clusters AS (
         min(osm_id)       AS min_osm_id,
         array_agg(osm_id) AS osm_ids,
         housenumber,
+        unit,
         postcode,
         ST_Union(way)     AS way,
         street_id
     FROM building_clusters
-    GROUP BY cluster_id, housenumber, street_id, postcode
+    GROUP BY cluster_id, housenumber, unit, street_id, postcode
 )
 SELECT
     b.min_osm_id                                        AS osm_id,
@@ -774,6 +779,7 @@ SELECT
     ST_Transform(b.way, 4326)                           AS way,
     b.street_id,
     ltrim(btrim(b.housenumber, '" '''), '#№')           AS housenumber,
+    b.unit,
     b.postcode,
     ST_X(ST_Transform(ST_PointOnSurface(b.way), 4326)) AS lon,
     ST_Y(ST_Transform(ST_PointOnSurface(b.way), 4326)) AS lat
