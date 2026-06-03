@@ -22,19 +22,6 @@ psql -h "$HOST" -p "$PORT" -U "$USER" gis <<'SQL'
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS hstore;
 CREATE EXTENSION IF NOT EXISTS btree_gist;
-
-CREATE TABLE IF NOT EXISTS validation_flags (
-    id           BIGSERIAL   PRIMARY KEY,
-    internal_id  BIGINT      NOT NULL,
-    country_code CHAR(2)     NOT NULL,
-    source       TEXT        NOT NULL,
-    flag_type    TEXT        NOT NULL,
-    old_value    TEXT,
-    new_value    TEXT,
-    detected_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_vf_internal_id ON validation_flags (internal_id);
-CREATE INDEX IF NOT EXISTS idx_vf_detected    ON validation_flags (detected_at DESC);
 SQL
 
 echo "Database 'gis' ready on $HOST:$PORT"

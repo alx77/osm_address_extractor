@@ -58,66 +58,6 @@ fi
 echo "loading wikimedia-importance into gis..."
 gunzip -c "$WIKI_CACHE" | psql -U postgres -d gis -q
 
-GEONAMES_CACHE="/cache/geonames_${2}.txt"
-GEONAMES_MAX_DAYS=30
-GEONAMES_OK=0
-if [ -f "$GEONAMES_CACHE" ]; then
-    GEONAMES_AGE_DAYS=$(( ( $(date +%s) - $(stat -c %Y "$GEONAMES_CACHE") ) / 86400 ))
-    if [ "$GEONAMES_AGE_DAYS" -lt "$GEONAMES_MAX_DAYS" ]; then
-        echo "using cached GeoNames for $2 (${GEONAMES_AGE_DAYS}d old)"
-        GEONAMES_OK=1
-    else
-        echo "GeoNames cache is ${GEONAMES_AGE_DAYS}d old, re-downloading..."
-    fi
-fi
-if [ "$GEONAMES_OK" = "0" ]; then
-    echo "downloading GeoNames for $2..."
-    if wget -q "https://download.geonames.org/export/dump/${2}.zip" -O "/tmp/geonames_${2}.zip" \
-       && unzip -p "/tmp/geonames_${2}.zip" "${2}.txt" > "$GEONAMES_CACHE"; then
-        GEONAMES_OK=1
-    else
-        echo "WARNING: GeoNames download failed for $2, skipping..."
-    fi
-    rm -f "/tmp/geonames_${2}.zip"
-fi
-
-if [ "$GEONAMES_OK" = "1" ]; then
-    echo "loading GeoNames for $2..."
-    psql -U postgres -d gis <<EOF
-CREATE UNLOGGED TABLE geonames_stage (
-    geonameid      integer,
-    name           text,
-    asciiname      text,
-    alternatenames text,
-    lat            float8,
-    lon            float8,
-    feature_class  char(1),
-    feature_code   text,
-    country_code   char(2),
-    cc2            text,
-    admin1_code    text,
-    admin2_code    text,
-    admin3_code    text,
-    admin4_code    text,
-    population     bigint,
-    elevation      integer,
-    dem            integer,
-    timezone       text,
-    modification_date text
-);
-COPY geonames_stage FROM '${GEONAMES_CACHE}' WITH (FORMAT text, DELIMITER E'\t', NULL '');
-CREATE UNLOGGED TABLE geonames AS
-SELECT name, lat, lon, feature_class, feature_code, population,
-       ST_SetSRID(ST_MakePoint(lon, lat), 4326) AS point
-FROM geonames_stage
-WHERE feature_class IN ('P', 'A')
-  AND name IS NOT NULL AND name <> '';
-DROP TABLE geonames_stage;
-CREATE INDEX idx_geonames_point ON geonames USING gist (point);
-ANALYZE geonames;
-EOF
-fi
-
 FILTERED="${FILENAME%.osm.pbf}-filtered.osm.pbf"
 echo "filtering PBF with osmium (roads, buildings, admin, addresses)..."
 time osmium tags-filter "$FILENAME" \
@@ -167,28 +107,12 @@ time psql -U postgres -d gis \
     -v lang_primary="$LANG_PRIMARY" \
     -f ./osm_addresses_extractor.sql
 
-if [ "${SKIP_VALIDATION:-0}" = "1" ]; then
-    echo "skipping validation (SKIP_VALIDATION=1)..."
-    psql -U postgres -d gis -c "
-        DROP TABLE IF EXISTS wikipedia_article;
-        DROP TABLE IF EXISTS wikipedia_redirect;
-        DROP TABLE IF EXISTS geonames;
-        DROP TABLE IF EXISTS geonames_stage;"
-else
-    echo "running validation for $2..."
-    time psql -U postgres -d gis \
-        -v lang_primary="$LANG_PRIMARY" \
-        -v country_code="$2" \
-        -f ./validate.sql
-fi
-
 echo "exporting results to /results/osm_addresses_$2..."
 rm -rf "/results/osm_addresses_$2"
 time pg_dump -Fd -j 4 -U postgres -d gis \
     -N import \
     -T lines -T spatial_ref_sys \
     -T wikipedia_article -T wikipedia_redirect \
-    -T geonames -T geonames_stage \
     -f "/results/osm_addresses_$2"
 chmod -R 755 "/results/osm_addresses_$2"
 echo "done: $2"

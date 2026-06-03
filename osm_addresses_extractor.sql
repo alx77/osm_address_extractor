@@ -31,12 +31,6 @@ CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;
 -- PKs, FKs and all indexes are built in one bulk pass AFTER all data is loaded —
 -- bulk index builds are 2-3x faster than per-row B-tree maintenance during INSERT.
 
-CREATE UNLOGGED TABLE IF NOT EXISTS data_source (
-    id   smallint,
-    name text NOT NULL UNIQUE
-);
-INSERT INTO data_source (id, name) VALUES (1, 'osm') ON CONFLICT DO NOTHING;
-
 -- ─── Object registry — stable IDs across extractions ─────────────────────────
 -- object_registry is PERSISTENT: dumped with the data and restored into
 -- production so internal_id never changes between reloads.
@@ -76,8 +70,6 @@ CREATE UNLOGGED TABLE IF NOT EXISTS state (
     lon               float8,
     lat               float8,
     country_code      text,
-    validation_status smallint NOT NULL DEFAULT 0,
-    validation_score  real     NOT NULL DEFAULT 1.0,
     updated_at        timestamptz NOT NULL DEFAULT now(),
     deleted_at        timestamptz
 );
@@ -98,8 +90,6 @@ CREATE UNLOGGED TABLE IF NOT EXISTS city (
     lon               float8,
     lat               float8,
     country_code      text,
-    validation_status smallint NOT NULL DEFAULT 0,
-    validation_score  real     NOT NULL DEFAULT 1.0,
     updated_at        timestamptz NOT NULL DEFAULT now(),
     deleted_at        timestamptz
 );
@@ -128,8 +118,6 @@ CREATE UNLOGGED TABLE IF NOT EXISTS natural_feature (
     city_osm_id       bigint,
     country_code      text,
     importance        float8,
-    validation_status smallint NOT NULL DEFAULT 0,
-    validation_score  real     NOT NULL DEFAULT 1.0,
     updated_at        timestamptz NOT NULL DEFAULT now(),
     deleted_at        timestamptz
 );
@@ -151,10 +139,6 @@ CREATE UNLOGGED TABLE IF NOT EXISTS street (
     lon               float8,
     lat               float8,
     country_code      text,
-    source_id         smallint NOT NULL DEFAULT 1,
-    source_ref        text,
-    validation_status smallint NOT NULL DEFAULT 0,
-    validation_score  real     NOT NULL DEFAULT 1.0,
     updated_at        timestamptz NOT NULL DEFAULT now(),
     deleted_at        timestamptz
 );
@@ -172,21 +156,8 @@ CREATE UNLOGGED TABLE IF NOT EXISTS building (
     lon          float8,
     lat          float8,
     country_code text,
-    source_id    smallint NOT NULL DEFAULT 1,
-    source_ref   text,
     updated_at   timestamptz NOT NULL DEFAULT now(),
     deleted_at   timestamptz
-);
-
-CREATE UNLOGGED TABLE IF NOT EXISTS validation_flags (
-    id           BIGSERIAL   PRIMARY KEY,
-    internal_id  BIGINT      NOT NULL,
-    country_code CHAR(2)     NOT NULL,
-    source       TEXT        NOT NULL,
-    flag_type    TEXT        NOT NULL,
-    old_value    TEXT,
-    new_value    TEXT,
-    detected_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ─── Bulk load: disable triggers ─────────────────────────────────────────────
@@ -686,8 +657,7 @@ WHERE osm_id NOT IN (
 CREATE INDEX idx_natural_feature_way ON natural_feature USING gist (way);
 ANALYZE natural_feature;
 
--- wikipedia tables are kept alive for validate.sql (Wikidata name comparison).
--- Dropped there, or by extract.sh when SKIP_VALIDATION=1.
+-- wikipedia tables are excluded from the dump via pg_dump -T.
 
 -- ─── building ────────────────────────────────────────────────────────────────
 -- id = min(osm_id) across the cluster — globally unique, stable across dumps.
@@ -1008,14 +978,5 @@ CREATE INDEX idx_building_street_id ON building (street_id);
 
 -- spatial index in 3857 (metres) for reverse geocoding — avoids ::geography cast on every row.
 CREATE INDEX idx_building_way_3857 ON building USING gist (ST_Transform(way, 3857));
-
--- ─── Drop before dump ────────────────────────────────────────────────────────
--- data_source: seeded by create.sql in production (id=1 'osm' already exists).
--- Including it in the dump causes duplicate key conflicts on pg_restore when
--- other countries' data is already present — so we drop it here instead of
--- excluding it via pg_dump -T.
--- object_registry and alias_osm are NOT dropped — they are included in the dump
--- and restored into production to preserve stable internal_ids across extractions.
-DROP TABLE data_source;
 
 SET session_replication_role = DEFAULT;
