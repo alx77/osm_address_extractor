@@ -226,6 +226,12 @@ ANALYZE country;
 
 -- ─── state ───────────────────────────────────────────────────────────────────
 INSERT INTO state (osm_id, name, country_osm_id, tags, way, lon, lat)
+WITH spatial_ok AS MATERIALIZED (
+    SELECT count(*) > 0 AS ok
+    FROM import.osm_admin sta
+    JOIN country ON ST_Contains(country.way, ST_Transform(sta.way, 4326))
+    WHERE sta.place = 'state' OR sta.admin_level = 4
+)
 SELECT DISTINCT ON (sta.osm_id)
     sta.osm_id,
     sta.name,
@@ -236,7 +242,11 @@ SELECT DISTINCT ON (sta.osm_id)
     ST_Y(ST_Transform(ST_Centroid(sta.way), 4326))
 FROM import.osm_admin sta
 CROSS JOIN country
-WHERE sta.place = 'state' OR sta.admin_level = 4;
+WHERE (sta.place = 'state' OR sta.admin_level = 4)
+  AND (
+    NOT (SELECT ok FROM spatial_ok)
+    OR ST_Contains(country.way, ST_Transform(sta.way, 4326))
+  );
 
 UPDATE state
 SET country_code = :'country_code';
