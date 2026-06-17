@@ -235,7 +235,7 @@ SELECT DISTINCT ON (sta.osm_id)
     ST_X(ST_Transform(ST_Centroid(sta.way), 4326)),
     ST_Y(ST_Transform(ST_Centroid(sta.way), 4326))
 FROM import.osm_admin sta
-JOIN country ON ST_Contains(country.way, ST_Transform(sta.way, 4326))
+CROSS JOIN country
 WHERE sta.place = 'state' OR sta.admin_level = 4;
 
 UPDATE state
