@@ -516,9 +516,28 @@ BEGIN
     END IF;
 END $$;
 
--- Step 3: propagate city importance to streets
+-- Step 3: street importance = city importance, differentiated within the city by road class
+-- and length. Propagating the bare city importance gave every street in a city the same value
+-- (~1/3 of UA streets clustered on the modal city importance), so intra-city autocomplete
+-- ranking degenerated into a tie broken by noise. The road-class weight tiers streets
+-- (проспект/primary > улица/residential > переулок/service) and a small length nudge breaks
+-- ties within a class (a long residential street outranks a short one). The multiplier is
+-- capped at 1.0 so a street never outranks its own city and inter-city order is preserved.
 UPDATE street s
-SET importance = c.importance
+SET importance = c.importance * LEAST(1.0,
+    CASE lower(coalesce(s.tags->'highway',''))
+        WHEN 'motorway' THEN 1.00 WHEN 'trunk' THEN 1.00
+        WHEN 'primary' THEN 0.92 WHEN 'secondary' THEN 0.85
+        WHEN 'tertiary' THEN 0.78
+        WHEN 'residential' THEN 0.66 WHEN 'unclassified' THEN 0.64
+        WHEN 'living_street' THEN 0.62 WHEN 'pedestrian' THEN 0.58
+        WHEN 'service' THEN 0.50 WHEN 'track' THEN 0.45
+        WHEN 'path' THEN 0.42 WHEN 'footway' THEN 0.40
+        ELSE 0.60
+    END
+    + LEAST(0.10, GREATEST(0.0,
+        LN(GREATEST(ST_Length(s.way::geography), 50) / 100.0) / LN(50) * 0.10))
+)
 FROM city c
 WHERE c.osm_id = s.city_osm_id;
 
