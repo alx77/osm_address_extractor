@@ -111,7 +111,7 @@ for CC in "$@"; do
     if [ -s "$NF_SQL" ]; then
         psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
             "DROP TABLE IF EXISTS natural_feature_stage;
-             CREATE UNLOGGED TABLE natural_feature_stage (LIKE natural_feature);"
+             CREATE UNLOGGED TABLE natural_feature_stage (LIKE natural_feature INCLUDING DEFAULTS);"
         sed 's/COPY public\.natural_feature /COPY public.natural_feature_stage /' "$NF_SQL" | \
             psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
         psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
