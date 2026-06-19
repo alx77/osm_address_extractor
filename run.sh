@@ -155,6 +155,8 @@ for CC in "${COUNTRIES[@]}"; do
 
     echo "=== $CC done ==="
 
-    echo "Removing docker image (keeping volumes)..."
-    docker rmi postgres-extractor 2>/dev/null || true
+    echo "Cleaning up Docker container, image and volumes for $CC..."
+    docker rm   "$CONTAINER"       2>/dev/null || true
+    docker rmi  postgres-extractor 2>/dev/null || true
+    docker volume prune -f
 done
