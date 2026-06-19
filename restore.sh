@@ -77,6 +77,9 @@ for CC in "$@"; do
         | grep -v 'TABLE DATA public natural_feature' \
         | grep -v 'TABLE DATA public alias_osm' \
         | grep -v 'TABLE DATA public object_registry' \
+        | grep -v 'TABLE DATA public state' \
+        | grep -v 'TABLE DATA public city' \
+        | grep -v 'TABLE DATA public country' \
         > "$TOC_FILE"
 
     pg_restore --data-only --disable-triggers \
@@ -101,6 +104,24 @@ for CC in "$@"; do
              DROP TABLE object_registry_stage;"
     fi
     rm -f "$OR_SQL"
+
+    # Restore country/state/city via staging (border osm_ids may exist from other countries)
+    for TBL in country state city; do
+        echo "Restoring $TBL (ON CONFLICT DO NOTHING)..."
+        TBL_SQL="$(mktemp --suffix=.sql)"
+        pg_restore --data-only --table="$TBL" -f "$TBL_SQL" "$DUMP_DIR" 2>/dev/null || true
+        if [ -s "$TBL_SQL" ]; then
+            psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+                "DROP TABLE IF EXISTS ${TBL}_stage;
+                 CREATE UNLOGGED TABLE ${TBL}_stage (LIKE ${TBL} INCLUDING DEFAULTS);"
+            sed "s/COPY public\.${TBL} /COPY public.${TBL}_stage /" "$TBL_SQL" | \
+                psql -h "$HOST" -p "$PORT" -U "$USER" -d gis
+            psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c \
+                "INSERT INTO ${TBL} SELECT * FROM ${TBL}_stage ON CONFLICT (osm_id) DO NOTHING;
+                 DROP TABLE ${TBL}_stage;"
+        fi
+        rm -f "$TBL_SQL"
+    done
 
     # Restore natural_feature via staging: pg_restore uses COPY internally which
     # doesn't support ON CONFLICT, so we dump to SQL, redirect COPY to a staging
