@@ -516,15 +516,23 @@ BEGIN
     END IF;
 END $$;
 
--- Step 3: street importance = city importance, differentiated within the city by road class
--- and length. Propagating the bare city importance gave every street in a city the same value
--- (~1/3 of UA streets clustered on the modal city importance), so intra-city autocomplete
--- ranking degenerated into a tie broken by noise. The road-class weight tiers streets
--- (проспект/primary > улица/residential > переулок/service) and a small length nudge breaks
--- ties within a class (a long residential street outranks a short one). The multiplier is
--- capped at 1.0 so a street never outranks its own city and inter-city order is preserved.
+-- Step 3: street importance = (city importance, lifted to its state floor) × road-class/length
+-- differentiation. Propagating the bare city importance gave every street in a city the same
+-- value (~1/3–½ of UA streets clustered on the modal city importance), so intra-city autocomplete
+-- ranking degenerated into a tie broken by noise.
+--
+-- The base is GREATEST(city importance, state_floor) — the state floor (MAX city importance in
+-- the state × 0.8) is folded in HERE as the base so streets in prominent states aren't ranked
+-- too low, WITHOUT flattening differentiation. (Applying the floor after differentiation, as a
+-- separate GREATEST step, raised every street in a big city to the same floor and erased the
+-- per-street signal — e.g. all of Kharkiv collapsed to 0.704.)
+--
+-- The road-class weight then tiers streets (проспект/primary > улица/residential > провулок/
+-- service) and a small length nudge breaks ties within a class (a long residential street
+-- outranks a short one). The multiplier is capped at 1.0 so a street never outranks its base.
+-- Street-only: city place importance is untouched.
 UPDATE street s
-SET importance = c.importance * LEAST(1.0,
+SET importance = GREATEST(c.importance, COALESCE(sf.state_imp * 0.8, 0.0)) * LEAST(1.0,
     CASE lower(coalesce(s.tags->'highway',''))
         WHEN 'motorway' THEN 1.00 WHEN 'trunk' THEN 1.00
         WHEN 'primary' THEN 0.92 WHEN 'secondary' THEN 0.85
@@ -539,22 +547,13 @@ SET importance = c.importance * LEAST(1.0,
         LN(GREATEST(ST_Length(s.way::geography), 50) / 100.0) / LN(50) * 0.10))
 )
 FROM city c
-WHERE c.osm_id = s.city_osm_id;
-
--- Step 4: raise street importance to state floor (MAX(city.importance in state) * 0.8).
--- Streets in high-importance states (Berlin, Hamburg) should not rank below
--- streets in obscure cities that happen to have high borough-level importance.
-UPDATE street s
-SET importance = GREATEST(s.importance, sf.state_imp * 0.8)
-FROM city c
-JOIN (
+LEFT JOIN (
     SELECT state_osm_id, MAX(importance) AS state_imp
     FROM city
     WHERE state_osm_id IS NOT NULL
     GROUP BY state_osm_id
 ) sf ON sf.state_osm_id = c.state_osm_id
-WHERE c.osm_id = s.city_osm_id
-  AND sf.state_imp * 0.8 > s.importance;
+WHERE c.osm_id = s.city_osm_id;
 
 -- Spatial indexes for the natural_feature → state/city containment joins.
 CREATE INDEX idx_state_way ON state USING gist (way);
