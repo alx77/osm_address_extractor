@@ -648,8 +648,11 @@ END $$;
 
 -- Deduplicate: rivers/canals/lakes are split into many OSM way segments.
 -- Rivers: importance = total length of merged segments (computed here before way→point).
---   Rhein ~800km → 0.3 + ln(800)/15 ≈ 0.75   Elbe ~1100km → ≈ 0.78
---   small stream 5km  → 0.3 + ln(5)/15  ≈ 0.41
+-- Capped low (≤0.55) and gently sloped so a natural feature is a TIE-BREAKER, not a dominant
+-- result: a long river ("Landgraben") must not outrank a same-prefix street ("Landgrafenstraße")
+-- when the query only fuzzily matches it. A genuine exact/prefix query ("rhein") still surfaces
+-- the river via the place exact-match boost in build_place_result.
+--   Rhein ~800km → 0.25 + ln(800)/20 ≈ 0.58 → cap 0.55   small stream 5km → ≈ 0.33
 -- Other types: keep max(importance) already set above.
 WITH groups AS (
     SELECT
@@ -658,9 +661,9 @@ WITH groups AS (
         ST_PointOnSurface(ST_Collect(way)) AS center,
         CASE
             WHEN type IN ('river', 'canal') THEN
-                LEAST(1.2, 0.3 + LN(GREATEST(1.0,
+                LEAST(0.55, 0.25 + LN(GREATEST(1.0,
                     ST_Length(ST_Collect(way)::geography) / 1000.0
-                )) / 15.0)
+                )) / 20.0)
             ELSE max(importance)
         END                                AS best_importance
     FROM natural_feature
