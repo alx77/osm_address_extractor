@@ -484,6 +484,22 @@ CREATE INDEX idx_street_rel_osm_ids ON street USING GIN (rel_osm_ids);
 CREATE INDEX idx_street_city_osm_id ON street (city_osm_id);
 ANALYZE street;
 
+-- ─── Reassign borough streets to their parent city ──────────────────────────────
+-- OSM registers a street under the smallest containing admin area, which in big cities is a
+-- borough/Stadtteil (Königsallee → Stadtmitte), not the city. Reassign such streets (admin_level
+-- >= 9) to the borough's PARENT city (district_osm_id → Düsseldorf), so:
+--   • the street's displayed city is the one users search for ("Düsseldorf", not "Stadtmitte");
+--   • the city's street set naturally contains its boroughs' streets ("koenigsallee dus" finds it);
+--   • street importance (propagated below) comes from the city, not the borough.
+-- Only real boroughs (>= 9) are touched, so independent towns in a Landkreis are left alone.
+UPDATE street s
+SET city_osm_id = b.district_osm_id
+FROM city b
+WHERE b.osm_id = s.city_osm_id
+  AND b.admin_level >= 9
+  AND b.district_osm_id IS NOT NULL
+  AND EXISTS (SELECT 1 FROM city p WHERE p.osm_id = b.district_osm_id);
+
 -- ─── importance ───────────────────────────────────────────────────────────────
 -- Step 1: population-based fallback importance for all cities
 UPDATE city
