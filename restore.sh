@@ -82,10 +82,14 @@ for CC in "$@"; do
         | grep -v 'TABLE DATA public country' \
         > "$TOC_FILE"
 
-    pg_restore --data-only --disable-triggers \
+    # Street + building data — the long step (millions of rows). --verbose makes pg_restore log
+    # each table/index as it goes, so the run is visibly alive instead of silent for minutes.
+    echo "[$(date +%T)] Restoring street + building data (parallel -j4, long step)…"
+    pg_restore --verbose --data-only --disable-triggers \
         -h "$HOST" -p "$PORT" -U "$USER" -d gis \
         --use-list="$TOC_FILE" \
         -j 4 "$DUMP_DIR"
+    echo "[$(date +%T)] street + building data restored."
 
     rm -f "$TOC_FILE"
 
