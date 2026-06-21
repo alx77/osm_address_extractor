@@ -64,6 +64,8 @@ for CC in "$@"; do
 
     psql -h "$HOST" -p "$PORT" -U "$USER" -d gis -c "
         DELETE FROM natural_feature WHERE country_code = '${CC}';
+        UPDATE natural_feature SET city_osm_id  = NULL WHERE city_osm_id  IN (SELECT osm_id FROM city  WHERE country_code = '${CC}');
+        UPDATE natural_feature SET state_osm_id = NULL WHERE state_osm_id IN (SELECT osm_id FROM state WHERE country_code = '${CC}');
         DELETE FROM city            WHERE country_code = '${CC}';
         DELETE FROM state           WHERE country_code = '${CC}';
         DELETE FROM country         WHERE country_code = '${CC}';
