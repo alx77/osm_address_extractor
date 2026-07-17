@@ -83,7 +83,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS city (
     tags              hstore,
     admin_level       integer,
     state_osm_id      bigint,
-    district_osm_id   bigint,
+    county_osm_id     bigint,
     importance        float8,
     way_origin        geometry(Geometry, 3857),
     way               geometry(Geometry, 4326),
@@ -128,6 +128,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS street (
     osm_id            bigint,           -- min(osm_id) of the cluster; NULL for non-OSM sources
     name              text NOT NULL,
     city_osm_id       bigint,
+    district_osm_id   bigint,           -- Ortsteil/borough WITHIN the city (per-street)
     rel_osm_ids       bigint[],
     osm_ids           bigint[],
     city_area         float8,
@@ -369,11 +370,11 @@ WHERE COALESCE(p.postal_code, p.tags->'postal_code') IS NOT NULL;
 
 ANALYZE postcode;
 
--- ─── district_osm_id: link sub-district cities to their rayon/Landkreis/powiat ─
+-- ─── county_osm_id: link sub-county cities to their rayon/Landkreis/powiat (admin_level 6) ─
 -- Only for cities at admin_level > 7 (or no explicit admin_level but place tag).
--- Cities that ARE districts (admin_level <= 7) are skipped.
+-- Cities that ARE counties (admin_level <= 7) are skipped.
 UPDATE city c
-SET district_osm_id = d.osm_id
+SET county_osm_id = d.osm_id
 FROM city d
 WHERE d.admin_level = 6
   AND c.osm_id != d.osm_id
@@ -484,21 +485,23 @@ CREATE INDEX idx_street_rel_osm_ids ON street USING GIN (rel_osm_ids);
 CREATE INDEX idx_street_city_osm_id ON street (city_osm_id);
 ANALYZE street;
 
--- ─── Reassign borough streets to their parent city ──────────────────────────────
+-- ─── Reassign borough streets to their parent city, recording the borough as the district ──────
 -- OSM registers a street under the smallest containing admin area, which in big cities is a
 -- borough/Stadtteil (Königsallee → Stadtmitte), not the city. Reassign such streets (admin_level
--- >= 9) to the borough's PARENT city (district_osm_id → Düsseldorf), so:
+-- >= 9) to the borough's PARENT city (b.county_osm_id → Düsseldorf), so:
 --   • the street's displayed city is the one users search for ("Düsseldorf", not "Stadtmitte");
 --   • the city's street set naturally contains its boroughs' streets ("koenigsallee dus" finds it);
 --   • street importance (propagated below) comes from the city, not the borough.
--- Only real boroughs (>= 9) are touched, so independent towns in a Landkreis are left alone.
+-- The borough itself is recorded as the street's district (Ortsteil = Stadtmitte), so it is kept as
+-- the sub-city level instead of being discarded. Only real boroughs (>= 9) are touched.
 UPDATE street s
-SET city_osm_id = b.district_osm_id
+SET city_osm_id     = b.county_osm_id,
+    district_osm_id = b.osm_id
 FROM city b
 WHERE b.osm_id = s.city_osm_id
   AND b.admin_level >= 9
-  AND b.district_osm_id IS NOT NULL
-  AND EXISTS (SELECT 1 FROM city p WHERE p.osm_id = b.district_osm_id);
+  AND b.county_osm_id IS NOT NULL
+  AND EXISTS (SELECT 1 FROM city p WHERE p.osm_id = b.county_osm_id);
 
 -- ─── importance ───────────────────────────────────────────────────────────────
 -- Step 1: population-based fallback importance for all cities
